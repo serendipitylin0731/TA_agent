@@ -37,7 +37,7 @@ def init_db() -> None:
         );
         CREATE TABLE IF NOT EXISTS sources (
           id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL,
-          kind TEXT NOT NULL CHECK(kind IN ('textbook','open_web','official')),
+          kind TEXT NOT NULL CHECK(kind='textbook'),
           stage TEXT NOT NULL, subject TEXT NOT NULL, edition TEXT NOT NULL DEFAULT '',
           publisher TEXT NOT NULL DEFAULT '', volume TEXT NOT NULL DEFAULT '',
           url TEXT NOT NULL DEFAULT '', license TEXT NOT NULL DEFAULT '',
@@ -63,9 +63,17 @@ def init_db() -> None:
         db.executemany("""INSERT OR REPLACE INTO catalog
           (id,stage,subject,edition,publisher,title,catalog_url,note)
           VALUES (:id,:stage,:subject,:edition,:publisher,:title,:catalog_url,:note)""", catalog_entries())
+        # Older installations may still contain imported web pages. Remove their
+        # search rows as well as their source records during the schema upgrade.
+        obsolete = [row["id"] for row in db.execute("SELECT id FROM sources WHERE kind!='textbook'")]
+        for source_id in obsolete:
+            db.execute("DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE source_id=?)", (source_id,))
+            db.execute("DELETE FROM sources WHERE id=?", (source_id,))
 
 
 def add_source(meta: dict, page_chunks: list[tuple[int | None, str, str]]) -> int:
+    if meta.get("kind") != "textbook":
+        raise ValueError("知识库仅接受教材原件")
     digest = hashlib.sha256((meta["url"] + meta["title"] + "".join(x[2] for x in page_chunks)).encode()).hexdigest()
     with connect() as db:
         existing = db.execute("SELECT id FROM sources WHERE content_hash=?", (digest,)).fetchone()
@@ -128,12 +136,12 @@ def list_catalog():
 
 def list_sources():
     with connect() as db:
-        return [dict(row) for row in db.execute("SELECT id,title,kind,stage,subject,edition,publisher,volume,url,license,catalog_id,created_at,(SELECT COUNT(*) FROM chunks WHERE source_id=sources.id) AS chunk_count FROM sources ORDER BY id DESC")]
+        return [dict(row) for row in db.execute("SELECT id,title,kind,stage,subject,edition,publisher,volume,url,license,catalog_id,created_at,(SELECT COUNT(*) FROM chunks WHERE source_id=sources.id) AS chunk_count FROM sources WHERE kind='textbook' ORDER BY id DESC")]
 
 
 def get_source(source_id: int):
     with connect() as db:
-        row = db.execute("SELECT * FROM sources WHERE id=?", (source_id,)).fetchone()
+        row = db.execute("SELECT * FROM sources WHERE id=? AND kind='textbook'", (source_id,)).fetchone()
         return dict(row) if row else None
 
 
@@ -163,7 +171,7 @@ def suggest(query: str, stage: str = "", subject: str = "", limit: int = 6) -> d
     value = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", unicodedata.normalize("NFKC", query)).lower()[:30]
     if len(value) < 2:
         return {"completions": [], "corrections": []}
-    scope = "(?='' OR s.stage=? OR s.stage='通用') AND (?='' OR s.subject=? OR s.subject='通用')"
+    scope = "s.kind='textbook' AND (?='' OR s.stage=?) AND (?='' OR s.subject=?)"
     filters = (stage, stage, subject, subject)
     with connect() as db:
         completions = db.execute(f"""SELECT t.term, SUM(t.frequency) AS popularity FROM search_terms t
@@ -192,7 +200,15 @@ def suggest(query: str, stage: str = "", subject: str = "", limit: int = 6) -> d
 
 def search(query: str, stage: str = "", subject: str = "", limit: int = 8, group: bool = True) -> list[dict]:
     named = re.search(r"《([^》]{2,40})》", query)
-    focus = named.group(1) if named else query
+    definition = re.search(r"(?:什么是|请解释)?([\u4e00-\u9fffA-Za-z0-9]{2,20})的定义", query)
+    focus = named.group(1) if named else definition.group(1) if definition else query
+    wants_definition = bool(definition or re.search(r"什么是|怎么定义|如何定义", query))
+    likely_subject = next((name for markers, name in (
+        (("函数", "勾股", "方程"), "数学"),
+        (("光合作用", "细胞", "生态系统"), "生物学"),
+        (("电流", "电压", "牛顿定律"), "物理"),
+        (("中和反应", "酸碱", "化学反应"), "化学"),
+    ) if any(marker in query for marker in markers)), "")
     terms = _terms(focus)
     if not terms:
         return []
@@ -207,7 +223,7 @@ def search(query: str, stage: str = "", subject: str = "", limit: int = 8, group
             except sqlite3.OperationalError:
                 pass
         clauses = " OR ".join("c.text LIKE ?" for _ in terms[:5])
-        rows = db.execute(f"SELECT c.id FROM chunks c JOIN sources s ON s.id=c.source_id WHERE ({clauses}) AND (?='' OR s.stage=? OR s.stage='通用') AND (?='' OR s.subject=? OR s.subject='通用') LIMIT 200", (*[f"%{term}%" for term in terms[:5]], stage, stage, subject, subject)).fetchall()
+        rows = db.execute(f"SELECT c.id FROM chunks c JOIN sources s ON s.id=c.source_id WHERE s.kind='textbook' AND ({clauses}) AND (?='' OR s.stage=?) AND (?='' OR s.subject=?)", (*[f"%{term}%" for term in terms[:5]], stage, stage, subject, subject)).fetchall()
         ids.update(row["id"] for row in rows)
         if not ids:
             return []
@@ -215,8 +231,8 @@ def search(query: str, stage: str = "", subject: str = "", limit: int = 8, group
         candidates = db.execute(f"""SELECT c.id,c.page,c.section,c.text,
           s.id AS source_id,s.title,s.kind,s.stage,s.subject,s.edition,s.publisher,s.volume,s.url,s.license,s.catalog_id
           FROM chunks c JOIN sources s ON s.id=c.source_id
-          WHERE c.id IN ({placeholders}) AND (?='' OR s.stage=? OR s.stage='通用')
-          AND (?='' OR s.subject=? OR s.subject='通用')""", (*ids, stage, stage, subject, subject)).fetchall()
+          WHERE c.id IN ({placeholders}) AND s.kind='textbook' AND (?='' OR s.stage=?)
+          AND (?='' OR s.subject=?)""", (*ids, stage, stage, subject, subject)).fetchall()
     result = []
     for row in candidates:
         item = dict(row)
@@ -225,7 +241,11 @@ def search(query: str, stage: str = "", subject: str = "", limit: int = 8, group
         item["score"] = round(sum((3 if term in body else 0) + (2 if term in title else 0) for term in terms)
                               + (7 if len(focus) >= 3 and focus.lower() in body else 0)
                               + (4 if len(focus) >= 3 and focus.lower() in body[:110] else 0)
-                              + (1.5 if item["kind"] == "textbook" else .8 if item["kind"] == "official" else 0), 2)
+                              + (1.5 if item["kind"] == "textbook" else 0)
+                              + (6 if likely_subject and item["subject"] == likely_subject else 0)
+                              + (9 if wants_definition and "一般地" in body and any(cue in body for cue in ("叫做", "称为", "就说")) else 0)
+                              + (5 if wants_definition and "唯一确定" in body else 0)
+                              + (7 if wants_definition and "那么我们就说" in body else 0), 2)
         if item["score"] <= 0:
             continue
         first = min((body.find(term) for term in terms if term in body), default=0)

@@ -33,7 +33,7 @@ def report() -> str:
         lines.append(f"| {item['stage']} | {item['subject']} | {item['edition']} | {len(group)} | "
                      f"{sum(book['chunk_count'] > 0 for book in group)} | {volumes} |")
     lines.extend(["", f"本地文件缺失：**{len(missing_files)}** 份。",
-                  "", "本表不包含开放网络资料；PDF 文件和 SQLite 数据库均位于被 Git 忽略的 `storage/`。",
+                  "", "知识库仅包含教材；PDF 文件和 SQLite 数据库均位于被 Git 忽略的 `storage/`。",
                   "教材版权归相应出版社；来源参见各资料记录和 [课本网说明](https://keben.app/disclaimer)。", ""])
     future_books = [book for book in books if any(f"{year}版" in book["volume"]
                     for year in range(date.today().year + 1, date.today().year + 6))]

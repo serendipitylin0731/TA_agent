@@ -21,22 +21,23 @@ async def answer(question: str, evidence: list[dict], mode: str, history: list[d
     if mode == "grounded":
         context = "\n\n".join(
             f"[{i + 1}] {item['title']}｜{item['stage']} {item['subject']}｜{item['edition']} {item['volume']}｜"
-            f"{'PDF第' + str(item['page']) + '页' if item['page'] else '网页资料'}\n{item['text'][:950]}"
+            f"{'PDF第' + str(item['page']) + '页' if item['page'] else '教材正文'}\n{item['text'][:1400]}"
             for i, item in enumerate(evidence)
         )
         system = (
             "你是面向初高中教学的证据优先助手。先读检索片段，再把相关事实整理成通顺、直接的回答；"
             "只能根据下面的检索片段回答事实性内容。若目录和正文页同时出现，综合两者回答位置问题；"
             "每个关键结论用[1]、[2]等标记来源。教材页码只可引用明确标有PDF页码且来源类型为textbook的片段。"
-            "若片段是开放网页或教学用书目录，必须明确说它不是教材正文。不能伪造课本章节、页码、引文。"
-            "若证据不足，直接说明缺什么资料，并给出可继续检索的关键词。可以用分步启发引导学生思考。"
+            "检索片段均为教材正文。只引用与问题直接相关的片段；不能伪造课本章节、页码、引文。"
+            "用自然、直接的中文回答，不要解释检索流程。数学表达式使用标准 LaTeX 语法。"
             f"\n\n检索片段：\n{context}"
         )
     else:
         system = (
-            "你是初高中教学辅助助手。当前为模型常识模式，没有教材或网页证据。"
-            "回答开头明确标注‘模型常识回答，未核对教材’；不得虚构教材页码、版本或引文。"
-            "对不确定的事实说出不确定之处；优先给出清晰的解题思路与核验建议。"
+            "你是初高中教学辅助助手。请直接、通顺地回答用户的问题。"
+            "不要提及检索是否成功，也不要在回答中添加来源状态说明；界面会单独标注。"
+            "不得虚构教材页码、版本、引文或引用编号。对不确定的事实说明不确定之处。"
+            "数学表达式使用标准 LaTeX 语法。"
         )
     messages = [{"role": "system", "content": system}]
     for turn in history[-6:]:
