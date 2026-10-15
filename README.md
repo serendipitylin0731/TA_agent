@@ -1,12 +1,14 @@
 # 知页 TA Agent
 
-面向初高中教学的本地知识库与 DeepSeek 问答原型。界面分为 **Chat 问答、查询原文、阅读原版教材**：检索会给出来源，导入的 PDF 可在页面内按原始页序阅读，来源问答会列出证据。
+面向初高中教学的本地教材知识库与 AI 问答原型。界面分为 **Chat 问答、查询原文、阅读原版教材**：Chat 先检索相关片段，再由 AI 整理回答，并在回答下方标明参考资料的位置；查询支持输入补全与错别字建议，PDF 可在页面内按原始页序阅读。
+
+项目设计见[系统架构](docs/architecture.md)，比赛展示可参考[演示脚本](docs/demo.md)，[教材覆盖快照](docs/coverage.md)记录本机接入情况，也可用 `python scripts/audit_catalog.py` 重新核查。
 
 ## 当前资料状态
 
 - 建有初中、高中共 20 个学科目录位，区分版本与出版社。教育部统编版仅覆盖初中语文、道德与法治、历史，以及高中语文、思想政治、历史。其他学科默认按人教版建档；浙江高中信息技术为浙教版，通用技术为苏教版。目录位不等于已取得教材正文。
 - `scripts/seed_open.py` 从中文维基百科公开 API 导入一组示例资料，保留原文链接、贡献者及 CC BY-SA 4.0 标识。这些资料与教材正文分开展示。
-- **仓库没有教材全文或 PDF**。官方在线阅读不自动授予复制、重新发布或批量索引的权限。具有相应使用权限的文件可在本地资料管理页导入；PDF 文本会建立页序索引，扫描 PDF 需要先 OCR。
+- **GitHub 仓库不包含教材 PDF**。教材文件保存在本机 `storage/uploads/`。具有相应使用权限的文件可在本地资料管理页导入；PDF 文本会建立页序索引，扫描 PDF 需要先 OCR。
 - 可从[国家中小学智慧教育平台](https://basic.smartedu.cn/)和[人教社电子教材页面](https://www.pep.com.cn/szkjxzy/dzjc/ywjy/)查阅官方在线教材。站点页面与授权范围由运营方决定，项目不会把这些页面冒充为本地已接入的正文。
 
 ## 本地运行
@@ -20,10 +22,16 @@ pip install -r requirements.txt
 cp .env.example .env
 # 在 .env 中填写 DEEPSEEK_API_KEY
 python scripts/seed_open.py
+python scripts/sync_keben.py --dry-run  # 预览匹配的教材
+python scripts/sync_keben.py            # 下载并索引本地教材
+python scripts/sync_general_tech.py     # 补充浙江使用的苏教版通用技术
+python scripts/build_suggestions.py      # 为既有资料补建联想词索引
 uvicorn app.main:app --host 127.0.0.1 --port 8765
 ```
 
 访问 `http://127.0.0.1:8765/`。检索和原文阅读无需 DeepSeek 密钥；模型问答需要有效密钥。默认模型为 `deepseek-flash`，通过官方兼容的 Chat Completions 接口直接调用。密钥只在服务端读取，不应提交到 Git。
+
+批量脚本只选网站标注为当前使用、修订年份不晚于本年的教材；初中选六三制，数学选人教 A 版。下载资料来自[课本网](https://keben.app/)和它标明的[上游目录](https://github.com/TapXWorld/ChinaTextbook)。[课本网的说明](https://keben.app/disclaimer)称其资源供个人学习研究、版权归出版社；本项目仅在本地缓存和索引，不把教材文件推送到 GitHub。下载、解析可能需要几分钟，并受源站可用性影响。
 
 ## 功能与边界
 

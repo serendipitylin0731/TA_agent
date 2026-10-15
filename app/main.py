@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -82,24 +83,51 @@ def source_content(source_id: int):
 
 @app.post("/api/search")
 def search(request: SearchRequest):
-    return {"results": db.search(request.query, request.stage, request.subject, request.limit)}
+    results = db.search(request.query, request.stage, request.subject, request.limit)
+    proposals = db.suggest(request.query, request.stage, request.subject)
+    corrected_query = ""
+    if not results and proposals["corrections"]:
+        candidate = proposals["corrections"][0]
+        if candidate != request.query:
+            results = db.search(candidate, request.stage, request.subject, request.limit)
+            if results:
+                corrected_query = candidate
+    return {"results": results, "corrected_query": corrected_query, "suggestions": proposals}
+
+
+@app.get("/api/suggest")
+def suggestions(q: str = Query(min_length=2, max_length=60), stage: str = "", subject: str = ""):
+    return db.suggest(q, stage, subject)
 
 
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
-    matches = db.search(request.query, request.stage, request.subject, 6, group=False) if request.mode == "grounded" else []
+    matches = db.search(request.query, request.stage, request.subject, 6) if request.mode == "grounded" else []
+    interpreted_query = ""
+    if request.mode == "grounded" and not matches:
+        corrections = db.suggest(request.query, request.stage, request.subject)["corrections"]
+        if corrections:
+            candidate = corrections[0]
+            matches = db.search(candidate, request.stage, request.subject, 6)
+            if matches:
+                interpreted_query = candidate
     if request.mode == "grounded" and not matches:
         return {"answer": "当前知识库没有足够证据回答这个问题。可先在‘联网资料’中检索并导入开放资料，或导入有使用权限的教材 PDF；我不会猜测教材页码。", "citations": [], "mode": request.mode, "model_used": False}
     evidence = db.get_chunks([item["id"] for item in matches])
     try:
-        content = await answer(request.query, evidence, request.mode, request.history)
+        content = await answer(request.query if not interpreted_query else f"用户原问题：{request.query}。检索时按“{interpreted_query}”查找，请在回答中说明这一解释。", evidence, request.mode, request.history)
     except ModelError as exc:
         raise HTTPException(503, str(exc)) from exc
     citations = [{"number": i + 1, "chunk_id": item["id"], "source_id": item["source_id"],
                   "title": item["title"], "kind": item["kind"], "page": item["page"],
+                  "stage": item["stage"], "subject": item["subject"],
                   "url": item["url"], "edition": item["edition"], "volume": item["volume"]}
                  for i, item in enumerate(evidence)]
-    return {"answer": content, "citations": citations, "mode": request.mode, "model_used": True}
+    cited_numbers = {int(number) for number in re.findall(r"\[(\d+)\]", content)}
+    if cited_numbers:
+        citations = [citation for citation in citations if citation["number"] in cited_numbers]
+    return {"answer": content, "citations": citations, "mode": request.mode,
+            "model_used": True, "interpreted_query": interpreted_query}
 
 
 @app.get("/api/web/search")

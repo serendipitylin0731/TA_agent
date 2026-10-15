@@ -10,7 +10,7 @@ def test_catalog_search_and_in_page_source(monkeypatch, tmp_path):
     db.init_db()
     catalog = db.list_catalog()
     assert len(catalog) == 20
-    assert next(x for x in catalog if x["id"] == "高中-通用技术")["publisher"] == "江苏教育出版社"
+    assert next(x for x in catalog if x["id"] == "高中-通用技术")["publisher"] == "江苏凤凰教育出版社"
     text = "光合作用让绿色植物把光能转为化学能。" * 80
     source_id = db.add_source({"title": "开放条目", "kind": "open_web", "stage": "通用", "subject": "生物学",
         "edition": "", "publisher": "测试贡献者", "volume": "", "url": "https://example.org/test",
@@ -35,3 +35,15 @@ def test_upload_requires_rights_confirmation(monkeypatch, tmp_path):
                                files={"file": ("sample.txt", "测试文本".encode())})
         assert response.status_code == 400
         assert db.list_sources() == []
+
+
+def test_source_backed_completion_and_typo_suggestion(monkeypatch, tmp_path):
+    monkeypatch.setenv("TA_DATA_DIR", str(tmp_path))
+    db.init_db()
+    db.add_source({"title": "语文 七年级上册", "kind": "textbook", "stage": "初中", "subject": "语文",
+        "edition": "统编版", "publisher": "人民教育出版社", "volume": "七年级上册", "url": "https://example.org/book",
+        "license": "test", "file_path": "", "catalog_id": "初中-语文"},
+        [(13, "济南的冬天", "济南的冬天\n济南的冬天是一篇散文。")])
+    assert "济南的冬天" in db.suggest("济南的", "初中", "语文")["completions"]
+    assert "济南的冬天" in db.suggest("济南的东天", "初中", "语文")["corrections"]
+    assert db.suggest("济南的东天", "高中", "语文")["corrections"] == []

@@ -36,7 +36,7 @@ def catalog_entries():
             })
     for subject, edition, publisher in (
         ("信息技术", "浙教版（浙江使用）", "浙江教育出版社"),
-        ("通用技术", "苏教版（浙江使用）", "江苏教育出版社"),
+        ("通用技术", "苏教版（浙江使用）", "江苏凤凰教育出版社"),
     ):
         entries.append({
             "id": f"高中-{subject}",

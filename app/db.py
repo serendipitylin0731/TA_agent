@@ -2,6 +2,9 @@ import hashlib
 import os
 import re
 import sqlite3
+import unicodedata
+from collections import Counter
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import jieba
@@ -50,6 +53,12 @@ def init_db() -> None:
         CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text, tokenize='trigram');
         CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source_id);
         CREATE INDEX IF NOT EXISTS idx_sources_filter ON sources(stage,subject,kind);
+        CREATE TABLE IF NOT EXISTS search_terms (
+          source_id INTEGER NOT NULL, term TEXT NOT NULL, frequency INTEGER NOT NULL,
+          PRIMARY KEY (source_id,term),
+          FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_search_terms_term ON search_terms(term);
         """)
         db.executemany("""INSERT OR REPLACE INTO catalog
           (id,stage,subject,edition,publisher,title,catalog_url,note)
@@ -69,7 +78,30 @@ def add_source(meta: dict, page_chunks: list[tuple[int | None, str, str]]) -> in
         for page, section, body in page_chunks:
             cursor = db.execute("INSERT INTO chunks (source_id,page,section,text) VALUES (?,?,?,?)", (source_id, page, section, body))
             db.execute("INSERT INTO chunks_fts (rowid,text) VALUES (?,?)", (cursor.lastrowid, body))
+        index_source_terms(db, source_id, page_chunks)
         return source_id
+
+
+def source_terms(page_chunks: list[tuple[int | None, str, str]]) -> Counter:
+    """Create a small, source-backed vocabulary for completion and typo proposals."""
+    terms: Counter = Counter()
+    for _, _, body in page_chunks:
+        terms.update(token.lower() for token in jieba.lcut(body)
+                     if 2 <= len(token) <= 14 and re.fullmatch(r"[\u4e00-\u9fffA-Za-z0-9]+", token))
+        for line in body.splitlines():
+            if len(line) > 60:
+                continue
+            for phrase in re.findall(r"[\u4e00-\u9fff]{3,20}", line):
+                terms[phrase] += 2
+    return terms
+
+
+def index_source_terms(connection: sqlite3.Connection, source_id: int,
+                       page_chunks: list[tuple[int | None, str, str]]) -> None:
+    connection.execute("DELETE FROM search_terms WHERE source_id=?", (source_id,))
+    terms = source_terms(page_chunks)
+    connection.executemany("INSERT INTO search_terms (source_id,term,frequency) VALUES (?,?,?)",
+                           ((source_id, term, freq) for term, freq in terms.items()))
 
 
 def delete_source(source_id: int) -> bool:
@@ -126,8 +158,42 @@ def _terms(query: str) -> list[str]:
     return list(dict.fromkeys(x for x in raw if (len(x) >= 2 or re.fullmatch(r"[a-z0-9]+", x)) and x not in STOPWORDS))[:10]
 
 
+def suggest(query: str, stage: str = "", subject: str = "", limit: int = 6) -> dict:
+    """Return completions and close spellings that actually occur in local sources."""
+    value = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", unicodedata.normalize("NFKC", query)).lower()[:30]
+    if len(value) < 2:
+        return {"completions": [], "corrections": []}
+    scope = "(?='' OR s.stage=? OR s.stage='通用') AND (?='' OR s.subject=? OR s.subject='通用')"
+    filters = (stage, stage, subject, subject)
+    with connect() as db:
+        completions = db.execute(f"""SELECT t.term, SUM(t.frequency) AS popularity FROM search_terms t
+            JOIN sources s ON s.id=t.source_id WHERE t.term LIKE ? AND LENGTH(t.term)<=14 AND {scope}
+            GROUP BY t.term ORDER BY popularity DESC LIMIT 50""", (value + "%", *filters)).fetchall()
+        anchors = [value[:2]]
+        if len(value) >= 5:
+            anchors.append(value[-2:])
+        fuzzy = db.execute(f"""SELECT t.term, SUM(t.frequency) AS popularity FROM search_terms t
+            JOIN sources s ON s.id=t.source_id WHERE (t.term LIKE ? OR t.term LIKE ?)
+            AND LENGTH(t.term) BETWEEN ? AND ? AND {scope}
+            GROUP BY t.term ORDER BY popularity DESC LIMIT 350""",
+            (f"%{anchors[0]}%", f"%{anchors[-1]}%", max(2, len(value)-3), len(value)+4, *filters)).fetchall()
+    comp = [row["term"] for row in completions if row["term"] != value][:limit]
+    scored = []
+    for row in fuzzy:
+        term = row["term"]
+        if term == value or term.startswith(value) or value.startswith(term):
+            continue
+        ratio = SequenceMatcher(None, value, term, autojunk=False).ratio()
+        if ratio >= (0.78 if len(value) >= 4 else 0.6):
+            scored.append((ratio, min(row["popularity"], 100), term))
+    scored.sort(key=lambda row: (-row[0], -row[1], len(row[2])))
+    return {"completions": comp, "corrections": [row[2] for row in scored[:limit]]}
+
+
 def search(query: str, stage: str = "", subject: str = "", limit: int = 8, group: bool = True) -> list[dict]:
-    terms = _terms(query)
+    named = re.search(r"《([^》]{2,40})》", query)
+    focus = named.group(1) if named else query
+    terms = _terms(focus)
     if not terms:
         return []
     ids: set[int] = set()
@@ -156,7 +222,10 @@ def search(query: str, stage: str = "", subject: str = "", limit: int = 8, group
         item = dict(row)
         body = item["text"].lower()
         title = item["title"].lower()
-        item["score"] = round(sum((3 if term in body else 0) + (2 if term in title else 0) for term in terms) + (1.5 if item["kind"] == "textbook" else .8 if item["kind"] == "official" else 0), 2)
+        item["score"] = round(sum((3 if term in body else 0) + (2 if term in title else 0) for term in terms)
+                              + (7 if len(focus) >= 3 and focus.lower() in body else 0)
+                              + (4 if len(focus) >= 3 and focus.lower() in body[:110] else 0)
+                              + (1.5 if item["kind"] == "textbook" else .8 if item["kind"] == "official" else 0), 2)
         if item["score"] <= 0:
             continue
         first = min((body.find(term) for term in terms if term in body), default=0)
