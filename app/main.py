@@ -70,6 +70,16 @@ def sources():
     return db.list_sources()
 
 
+@app.get("/api/sources/{source_id}/content")
+def source_content(source_id: int):
+    source = db.get_source(source_id)
+    if not source:
+        raise HTTPException(404, "资料不存在")
+    public = {key: value for key, value in source.items() if key not in {"file_path", "content_hash"}}
+    public["file_type"] = Path(source["file_path"]).suffix.lower() if source["file_path"] else ""
+    return {"source": public, "text": db.get_source_text(source_id) if public["file_type"] != ".pdf" else ""}
+
+
 @app.post("/api/search")
 def search(request: SearchRequest):
     return {"results": db.search(request.query, request.stage, request.subject, request.limit)}
@@ -77,7 +87,7 @@ def search(request: SearchRequest):
 
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
-    matches = db.search(request.query, request.stage, request.subject, 6) if request.mode == "grounded" else []
+    matches = db.search(request.query, request.stage, request.subject, 6, group=False) if request.mode == "grounded" else []
     if request.mode == "grounded" and not matches:
         return {"answer": "当前知识库没有足够证据回答这个问题。可先在‘联网资料’中检索并导入开放资料，或导入有使用权限的教材 PDF；我不会猜测教材页码。", "citations": [], "mode": request.mode, "model_used": False}
     evidence = db.get_chunks([item["id"] for item in matches])

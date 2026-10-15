@@ -105,12 +105,28 @@ def get_source(source_id: int):
         return dict(row) if row else None
 
 
+def get_source_text(source_id: int) -> str:
+    with connect() as db:
+        pieces = [row["text"] for row in db.execute(
+            "SELECT text FROM chunks WHERE source_id=? ORDER BY id LIMIT 120", (source_id,)
+        )]
+    body = ""
+    for piece in pieces:
+        if not body:
+            body = piece
+            continue
+        overlap = next((size for size in range(min(80, len(piece), len(body)), 0, -1)
+                        if body.endswith(piece[:size])), 0)
+        body += piece[overlap:] if overlap else "\n\n" + piece
+    return body[:80000]
+
+
 def _terms(query: str) -> list[str]:
     raw = [x.strip().lower() for x in jieba.lcut(query) if x.strip()]
     return list(dict.fromkeys(x for x in raw if (len(x) >= 2 or re.fullmatch(r"[a-z0-9]+", x)) and x not in STOPWORDS))[:10]
 
 
-def search(query: str, stage: str = "", subject: str = "", limit: int = 8) -> list[dict]:
+def search(query: str, stage: str = "", subject: str = "", limit: int = 8, group: bool = True) -> list[dict]:
     terms = _terms(query)
     if not terms:
         return []
@@ -149,7 +165,16 @@ def search(query: str, stage: str = "", subject: str = "", limit: int = 8) -> li
         item.pop("text")
         result.append(item)
     result.sort(key=lambda x: (-x["score"], x["source_id"], x["page"] or 0))
-    return result[:limit]
+    if not group:
+        return result[:limit]
+    grouped = []
+    seen = set()
+    for item in result:
+        key = (item["source_id"], item["page"] if item["kind"] == "textbook" else None)
+        if key not in seen:
+            grouped.append(item)
+            seen.add(key)
+    return grouped[:limit]
 
 
 def get_chunks(ids: list[int]) -> list[dict]:
