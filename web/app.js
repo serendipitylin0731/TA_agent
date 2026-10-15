@@ -118,7 +118,7 @@ function closeReader(){
 }
 
 function bind(){
-  document.querySelectorAll('[data-view]').forEach(el=>el.onclick=()=>{state.view=el.dataset.view;state.notice='';render()});
+  document.querySelectorAll('[data-view]').forEach(el=>el.onclick=()=>{state.view=el.dataset.view;if(state.view==='chat'&&!state.messages.length)state.examples=sampleExamples();state.notice='';render()});
   document.querySelectorAll('[data-prompt]').forEach(el=>el.onclick=()=>sendChat(el.dataset.prompt));
   document.querySelectorAll('[data-open-result]').forEach(el=>el.onclick=()=>{const item=state.searchResults[Number(el.dataset.openResult)];openReader(item.source_id,item.page,'search')});
   document.querySelectorAll('[data-read-book]').forEach(el=>el.onclick=()=>openReader(Number(el.dataset.readBook),0,'catalog'));
