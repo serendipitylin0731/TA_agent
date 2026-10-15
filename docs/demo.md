@@ -8,10 +8,10 @@
 source .venv/bin/activate
 python scripts/sync_keben.py --dry-run
 python scripts/sync_general_tech.py
-uvicorn app.main:app --host 127.0.0.1 --port 8765
+uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-首次同步大量教材需要较长时间；演示前确认 `http://127.0.0.1:8765/api/status` 的 `textbook_count` 大于 0。要演示 AI 回答，在 `.env` 中配置模型服务的 API Key 并重启服务。演示资料仅在本机使用。
+首次同步大量教材需要较长时间；演示前确认 `http://127.0.0.1:8000/api/status` 的 `textbook_count` 大于 0。要演示 AI 回答，在 `.env` 中配置模型服务的 API Key 并重启服务。演示资料仅在本机使用。
 
 ## 三分钟主线
 
