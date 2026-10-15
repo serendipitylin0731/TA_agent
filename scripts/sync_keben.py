@@ -41,7 +41,8 @@ def get_json(client: httpx.Client, path: str, params: dict | None = None) -> dic
     raise RuntimeError("rate limit")
 
 
-def book_list(client: httpx.Client, stage: str, subject: str, version: str) -> list[dict]:
+def book_list(client: httpx.Client, stage: str, subject: str, version: str,
+              include_future: bool = False) -> list[dict]:
     page = 1
     matches = []
     while True:
@@ -56,7 +57,7 @@ def book_list(client: httpx.Client, stage: str, subject: str, version: str) -> l
                 continue
             if item.get("isCurrent") is False:
                 continue
-            if item.get("revision") and int(item["revision"]) > date.today().year:
+            if not include_future and item.get("revision") and int(item["revision"]) > date.today().year:
                 continue
             if stage == "高中" and subject == "数学" and item.get("variant") not in (None, "A"):
                 continue
@@ -130,20 +131,27 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="show matching books without downloading")
     parser.add_argument("--limit", type=int, default=0, help="maximum new books to import; 0 means all")
+    parser.add_argument("--book-id", help="import one explicitly chosen site book, including a future-dated revision")
     args = parser.parse_args()
     db.init_db()
     existing_urls = {item["url"] for item in db.list_sources()}
     pending = []
+    found_specific = False
     with httpx.Client(timeout=70, follow_redirects=True, headers={"User-Agent": "TA-Agent/0.1 (local educational study)"}) as client:
         for catalog in db.list_catalog():
             version = selected_version(catalog["edition"])
             try:
-                matches = book_list(client, catalog["stage"], catalog["subject"], version)
+                matches = book_list(client, catalog["stage"], catalog["subject"], version,
+                                    include_future=bool(args.book_id))
             except (httpx.HTTPError, ValueError, RuntimeError) as exc:
                 print(f"SEARCH ERROR {catalog['id']}: {type(exc).__name__}", flush=True)
                 continue
             print(f"CATALOG {catalog['id']}: {len(matches)} matched", flush=True)
             for item in matches:
+                if args.book_id and item["id"] != args.book_id:
+                    continue
+                if args.book_id:
+                    found_specific = True
                 book_url = f"{SITE}/book/{item['id']}"
                 if book_url in existing_urls:
                     continue
@@ -152,6 +160,8 @@ def main() -> None:
                     continue
                 pending.append((item, catalog))
             time.sleep(0.4)
+        if args.book_id and not found_specific:
+            raise SystemExit(f"Book {args.book_id} was not found in the selected catalog")
         if args.dry_run:
             return
         if args.limit:

@@ -35,6 +35,11 @@ def report() -> str:
     lines.extend(["", f"本地文件缺失：**{len(missing_files)}** 份。",
                   "", "本表不包含开放网络资料；PDF 文件和 SQLite 数据库均位于被 Git 忽略的 `storage/`。",
                   "教材版权归相应出版社；来源参见各资料记录和 [课本网说明](https://keben.app/disclaimer)。", ""])
+    future_books = [book for book in books if any(f"{year}版" in book["volume"]
+                    for year in range(date.today().year + 1, date.today().year + 6))]
+    if future_books:
+        lines.extend(["未来年份标注：" + "；".join(book["title"] for book in future_books) +
+                      "。按用户指定接入，版本标签取自来源网站，不据此认定为当前学年正式用书。", ""])
     junior_history = by_catalog.get("初中-历史", [])
     if not any("八年级" in book["volume"] and "下册" in book["volume"] for book in junior_history):
         lines.extend(["已知册次缺口：初中历史八年级下册。课本网在本次核查时仅提供 2027 修订版，"

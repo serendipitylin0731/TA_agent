@@ -24,6 +24,7 @@ cp .env.example .env
 python scripts/seed_open.py
 python scripts/sync_keben.py --dry-run  # 预览匹配的教材
 python scripts/sync_keben.py            # 下载并索引本地教材
+python scripts/sync_keben.py --book-id 0205  # 单独接入用户指定的历史八下 2027 版
 python scripts/sync_general_tech.py     # 补充浙江使用的苏教版通用技术
 python scripts/build_suggestions.py      # 为既有资料补建联想词索引
 uvicorn app.main:app --host 127.0.0.1 --port 8765
@@ -31,7 +32,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 8765
 
 访问 `http://127.0.0.1:8765/`。检索和原文阅读无需 DeepSeek 密钥；模型问答需要有效密钥。默认模型为 `deepseek-flash`，通过官方兼容的 Chat Completions 接口直接调用。密钥只在服务端读取，不应提交到 Git。
 
-批量脚本只选网站标注为当前使用、修订年份不晚于本年的教材；初中选六三制，数学选人教 A 版。下载资料来自[课本网](https://keben.app/)和它标明的[上游目录](https://github.com/TapXWorld/ChinaTextbook)。[课本网的说明](https://keben.app/disclaimer)称其资源供个人学习研究、版权归出版社；本项目仅在本地缓存和索引，不把教材文件推送到 GitHub。下载、解析可能需要几分钟，并受源站可用性影响。
+批量脚本只选网站标注为当前使用、修订年份不晚于本年的教材；初中选六三制，数学选人教 A 版。`--book-id` 用于明确指定单本教材，可接入未来标注的修订版，页面会保留实际年份。下载资料来自[课本网](https://keben.app/)和它标明的[上游目录](https://github.com/TapXWorld/ChinaTextbook)。[课本网的说明](https://keben.app/disclaimer)称其资源供个人学习研究、版权归出版社；本项目仅在本地缓存和索引，不把教材文件推送到 GitHub。下载、解析可能需要几分钟，并受源站可用性影响。
 
 ## 功能与边界
 
