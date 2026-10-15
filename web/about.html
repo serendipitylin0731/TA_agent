@@ -1,1 +1,10 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>关于资料与回答 · 知页</title><link rel="stylesheet" href="/style.css"></head><body><main class="about"><a href="/">← 返回知页</a><h1>资料与回答说明</h1><p>知识库只索引已接入的教材文件。目录说明版本，PDF 页序来自实际文件，可能与印刷页码不同。</p><p>Chat 优先引用教材相关页并在答案下方提供定位。没有合适匹配时模型直接回答，页面单独标注未命中。模型回答可能有误，请结合教材与教师核验。</p><p>教材文件保存在本机，不随代码仓库发布。普通用户没有上传、删除或导入资料的入口与 API。维护者通过本地同步脚本更新教材。</p></main></body></html>
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>关于知页 · TA Agent</title><link rel="stylesheet" href="/style.css"></head>
+<body><main class="about"><a href="/">← 返回知页</a><h1>知页 · 教材知识工作台</h1>
+<p>“有据可查，才值得相信”是这个项目的设计初衷。教师和学生提出问题时，应能看见答案依据、定位到教材的具体页，并能直接阅读原书。找不到合适教材证据时，系统会保留一个顺畅的模型回答，同时在答案下方明确说明教材库未命中。</p>
+<h2>已经实现</h2><ul><li>Chat 问答：检索教材相关页，综合多处内容回答，并附可打开的教材出处。</li><li>查询原文：支持关键词、跨行文字、模糊检索、补全和错别字建议；按书合并，展示关键页码。</li><li>阅读教材：按初中、高中和学科浏览教材封面；双页阅读，支持边缘按钮、方向键翻页和下一处关键词定位。</li><li>最近记录：仅在当前浏览器本地保存最近 10 条对话及检索记录。</li></ul>
+<h2>教材覆盖</h2><p>目录按初中、高中学科建立。实际可检索的内容只来自已导入的教材文件；教材册数会随本地同步更新。当前实例已接入 <strong id="bookCount">—</strong> 册教材，覆盖 <strong id="subjectCount">—</strong> 个学科目录。教材页码采用 PDF 原始页序，可能与印刷页码不同。</p>
+<h2>联系与项目主页</h2><p>邮箱：<a href="mailto:serendipity_lin@sjtu.edu.cn">serendipity_lin@sjtu.edu.cn</a><br>主页：<a href="https://serendipitylin0731.github.io/" target="_blank" rel="noopener noreferrer">serendipitylin0731.github.io</a></p>
+<p>教材文件保存在运行机器中，不随公开代码仓库发布；普通用户没有资料管理入口。</p></main>
+<script>fetch('/api/status').then(r=>r.json()).then(s=>{document.getElementById('bookCount').textContent=s.textbook_count;document.getElementById('subjectCount').textContent=s.catalog_slots}).catch(()=>{});</script>
+</body></html>

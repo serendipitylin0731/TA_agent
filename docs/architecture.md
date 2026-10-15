@@ -18,8 +18,10 @@ flowchart LR
 
 教材库只存储教材。同步脚本从既定来源下载 PDF，建立书名、学段、学科、册次、原始 PDF 页序和分块索引。普通用户只有查询与阅读权限；Web API 没有上传、删除或网页导入端点。
 
-检索结合中文分词、FTS5、文本匹配、问题意图和学科相关性排序。定义类问题会优先定位教材中的定义段落。Chat 优先使用检索到的教材片段生成答案，引用标记指向具体 PDF 页；无合适教材匹配时改用模型回答，在答案下方单独提示未命中，不伪造引用。
+检索把 PDF 文本做 NFKC 归一化并消除跨行空白，保存一份 FTS5 索引；原文仍保留，供片段和页码展示。搜索时拆出主题与“定义、过程、顶点式、发展”等限定词，再按主题命中、限定词距离、学科覆盖和正文位置排序。目录页、前言和练习题中的干扰片段会降低权重，明显不相关的匹配不作为 Chat 证据。错别字建议来自实际教材词表。
 
-前端使用本地 KaTeX 渲染数学公式，PDF 阅读在独立全屏界面打开。返回按钮会回到原页面。API Key 只在服务端环境变量中读取。
+跨章节问题会扩展主题检索，并从不同书页选取证据，供模型综合。引用标记指向具体 PDF 页；无合适教材匹配时改用模型回答，在答案下方单独提示未命中，不伪造引用。查询原文按书合并多个命中页。
 
-主要只读 API：`GET /api/status`、`GET /api/catalog`、`GET /api/sources`、`GET /api/sources/{id}/content`、`GET /api/sources/{id}/file`、`POST /api/search`、`GET /api/suggest`、`POST /api/chat`。后两个 POST 是查询请求，不修改知识库。
+前端使用本地 KaTeX 渲染数学公式，用本地 PDF.js 把教材页面绘制成双页画布，不嵌入浏览器 PDF 工具栏。从搜索或引用进入时打开命中页；从目录进入时打开第一页。下一命中按钮通过页级索引定位。封面由 PDF 首页在服务端生成并缓存。返回按钮会回到原页面；最近 10 条聊天和检索记录保存在浏览器本地。API Key 只在服务端环境变量中读取。
+
+主要只读 API：`GET /api/status`、`GET /api/catalog`、`GET /api/sources`、`GET /api/sources/{id}/content`、`GET /api/sources/{id}/file`、`GET /api/sources/{id}/cover`、`GET /api/sources/{id}/pages`、`POST /api/search`、`GET /api/suggest`、`POST /api/chat`。POST 均是查询请求，不修改知识库。

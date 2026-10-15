@@ -5,6 +5,7 @@ import sqlite3
 import unicodedata
 from collections import Counter
 from difflib import SequenceMatcher
+from math import sqrt
 from pathlib import Path
 
 import jieba
@@ -12,6 +13,11 @@ import jieba
 from .catalog import catalog_entries
 
 STOPWORDS = {"什么", "怎么", "如何", "为什么", "可以", "哪些", "关于", "是否", "解释", "一下", "这个", "那个", "相关", "教材", "课本", "知识", "内容", "在哪", "哪里", "什么是"}
+
+
+def normalize_search(value: str) -> str:
+    """Match OCR text despite full-width characters and arbitrary PDF line breaks."""
+    return "".join(char for char in unicodedata.normalize("NFKC", value).lower() if not char.isspace())
 
 
 def data_dir() -> Path:
@@ -51,6 +57,7 @@ def init_db() -> None:
           FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE CASCADE
         );
         CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(text, tokenize='trigram');
+        CREATE VIRTUAL TABLE IF NOT EXISTS chunks_search USING fts5(text, tokenize='trigram');
         CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source_id);
         CREATE INDEX IF NOT EXISTS idx_sources_filter ON sources(stage,subject,kind);
         CREATE TABLE IF NOT EXISTS search_terms (
@@ -68,7 +75,15 @@ def init_db() -> None:
         obsolete = [row["id"] for row in db.execute("SELECT id FROM sources WHERE kind!='textbook'")]
         for source_id in obsolete:
             db.execute("DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE source_id=?)", (source_id,))
+            db.execute("DELETE FROM chunks_search WHERE rowid IN (SELECT id FROM chunks WHERE source_id=?)", (source_id,))
             db.execute("DELETE FROM sources WHERE id=?", (source_id,))
+        indexed = db.execute("SELECT COUNT(*) FROM chunks_search").fetchone()[0]
+        total = db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        if indexed != total:
+            db.execute("DELETE FROM chunks_search")
+            db.executemany("INSERT INTO chunks_search(rowid,text) VALUES (?,?)",
+                           ((row["id"], normalize_search(row["text"]))
+                            for row in db.execute("SELECT id,text FROM chunks")))
 
 
 def add_source(meta: dict, page_chunks: list[tuple[int | None, str, str]]) -> int:
@@ -86,6 +101,7 @@ def add_source(meta: dict, page_chunks: list[tuple[int | None, str, str]]) -> in
         for page, section, body in page_chunks:
             cursor = db.execute("INSERT INTO chunks (source_id,page,section,text) VALUES (?,?,?,?)", (source_id, page, section, body))
             db.execute("INSERT INTO chunks_fts (rowid,text) VALUES (?,?)", (cursor.lastrowid, body))
+            db.execute("INSERT INTO chunks_search (rowid,text) VALUES (?,?)", (cursor.lastrowid, normalize_search(body)))
         index_source_terms(db, source_id, page_chunks)
         return source_id
 
@@ -119,6 +135,7 @@ def delete_source(source_id: int) -> bool:
             return False
         ids = [row["id"] for row in db.execute("SELECT id FROM chunks WHERE source_id=?", (source_id,))]
         db.executemany("DELETE FROM chunks_fts WHERE rowid=?", [(i,) for i in ids])
+        db.executemany("DELETE FROM chunks_search WHERE rowid=?", [(i,) for i in ids])
         db.execute("DELETE FROM sources WHERE id=?", (source_id,))
         if source["file_path"]:
             Path(source["file_path"]).unlink(missing_ok=True)
@@ -192,74 +209,180 @@ def suggest(query: str, stage: str = "", subject: str = "", limit: int = 6) -> d
         if term == value or term.startswith(value) or value.startswith(term):
             continue
         ratio = SequenceMatcher(None, value, term, autojunk=False).ratio()
-        if ratio >= (0.78 if len(value) >= 4 else 0.6):
+        if ratio >= (0.72 if len(value) >= 4 else 0.6):
             scored.append((ratio, min(row["popularity"], 100), term))
     scored.sort(key=lambda row: (-row[0], -row[1], len(row[2])))
     return {"completions": comp, "corrections": [row[2] for row in scored[:limit]]}
 
 
+def _query_plan(query: str) -> dict:
+    value = unicodedata.normalize("NFKC", query).strip().lower()
+    value = re.sub(r"[?？!！。\s]+$", "", value)
+    value = re.sub(r"^(请问|请解释|请说明|什么是|什么叫)", "", value)
+    value = re.sub(r"(是什么意思|是什么|有哪些|是多少|是谁|怎么理解|如何理解)$", "", value)
+    description = re.fullmatch(r"(.+?)(描写了什么|写了什么|讲了什么|表达了什么)", value)
+    development = re.fullmatch(r"(.+?)(?:如何|怎么)(发展|演变|形成)", value)
+    facet_words = "第二定义|第一定义|定义|基本过程|过程|主要特点|特点|性质|意义|原因|作用|用法|影响因素|一般原则|基本特征|作者"
+    match = re.fullmatch(rf"(.+?)的({facet_words})", value)
+    if description:
+        core, facet = description.group(1).strip("《》"), "描写"
+    elif development:
+        core, facet = development.group(1), development.group(2)
+    elif match:
+        core, facet = match.group(1), match.group(2)
+    elif "的" in value and len(value.split("的", 1)[0]) >= 2 and len(value.split("的", 1)[1]) >= 2:
+        core, facet = value.split("的", 1)
+    else:
+        core, facet = value, ""
+    if facet == "原因" and core.endswith("爆发"):
+        core = core[:-2]
+    core = normalize_search(core.strip("《》"))
+    phrase = normalize_search(value)
+    tokens = list(dict.fromkeys(normalize_search(token) for token in jieba.lcut(core)
+                                if len(normalize_search(token)) >= 2 and token not in STOPWORDS))
+    if len(core) >= 5 and core[-3:] not in tokens:
+        tokens.append(core[-3:])
+    tokens.sort(key=lambda token: (-len(token), token))
+    if core and core not in tokens:
+        tokens.insert(0, core)
+    return {"core": core, "facet": normalize_search(facet), "phrase": phrase,
+            "tokens": tokens[:6], "definition": bool("定义" in facet or "什么是" in query or ("是什么" in query and not facet)),
+            "strict_ordinal": facet == "第二定义", "numeric": "是多少" in query}
+
+
+def _compact_with_offsets(value: str) -> tuple[str, str, list[int]]:
+    display = unicodedata.normalize("NFKC", value)
+    offsets = [index for index, char in enumerate(display) if not char.isspace()]
+    return display, "".join(display[index].lower() for index in offsets), offsets
+
+
 def search(query: str, stage: str = "", subject: str = "", limit: int = 8, group: bool = True) -> list[dict]:
-    named = re.search(r"《([^》]{2,40})》", query)
-    definition = re.search(r"(?:什么是|请解释)?([\u4e00-\u9fffA-Za-z0-9]{2,20})的定义", query)
-    focus = named.group(1) if named else definition.group(1) if definition else query
-    wants_definition = bool(definition or re.search(r"什么是|怎么定义|如何定义", query))
-    likely_subject = next((name for markers, name in (
-        (("函数", "勾股", "方程"), "数学"),
-        (("光合作用", "细胞", "生态系统"), "生物学"),
-        (("电流", "电压", "牛顿定律"), "物理"),
-        (("中和反应", "酸碱", "化学反应"), "化学"),
-    ) if any(marker in query for marker in markers)), "")
-    terms = _terms(focus)
-    if not terms:
+    plan = _query_plan(query)
+    core = plan["core"]
+    if len(core) < 2:
         return []
-    ids: set[int] = set()
-    with connect() as db:
-        long_terms = [term for term in terms if len(term) >= 3]
-        if long_terms:
-            expression = " OR ".join('"' + term.replace('"', '""') + '"' for term in long_terms)
-            try:
-                rows = db.execute("SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ? ORDER BY bm25(chunks_fts) LIMIT 160", (expression,)).fetchall()
-                ids.update(row["rowid"] for row in rows)
-            except sqlite3.OperationalError:
-                pass
-        clauses = " OR ".join("c.text LIKE ?" for _ in terms[:5])
-        rows = db.execute(f"SELECT c.id FROM chunks c JOIN sources s ON s.id=c.source_id WHERE s.kind='textbook' AND ({clauses}) AND (?='' OR s.stage=?) AND (?='' OR s.subject=?)", (*[f"%{term}%" for term in terms[:5]], stage, stage, subject, subject)).fetchall()
-        ids.update(row["id"] for row in rows)
+    with connect() as connection:
+        def find_ids(term: str) -> list[int]:
+            return [row["rowid"] for row in connection.execute("""SELECT x.rowid FROM chunks_search x
+                JOIN chunks c ON c.id=x.rowid JOIN sources s ON s.id=c.source_id
+                WHERE x.text LIKE ? AND s.kind='textbook' AND (?='' OR s.stage=?)
+                AND (?='' OR s.subject=?) LIMIT 5000""",
+                (f"%{term}%", stage, stage, subject, subject))]
+        ids = set(find_ids(core))
+        exact_core = bool(ids)
+        if not ids or (len(core) >= 5 and len(ids) < 30):
+            token_matches = [set(find_ids(token)) for token in plan["tokens"] if token != core and len(token) >= 2]
+            usable = [group for group in token_matches if group]
+            if usable:
+                common = set.intersection(*usable[:2]) if len(usable) > 1 else set()
+                ids.update(common if common else set.union(*usable))
         if not ids:
             return []
         placeholders = ",".join("?" for _ in ids)
-        candidates = db.execute(f"""SELECT c.id,c.page,c.section,c.text,
-          s.id AS source_id,s.title,s.kind,s.stage,s.subject,s.edition,s.publisher,s.volume,s.url,s.license,s.catalog_id
-          FROM chunks c JOIN sources s ON s.id=c.source_id
-          WHERE c.id IN ({placeholders}) AND s.kind='textbook' AND (?='' OR s.stage=?)
-          AND (?='' OR s.subject=?)""", (*ids, stage, stage, subject, subject)).fetchall()
-    result = []
-    for row in candidates:
+        rows = connection.execute(f"""SELECT c.id,c.page,c.section,c.text,
+            s.id AS source_id,s.title,s.kind,s.stage,s.subject,s.edition,s.publisher,s.volume,s.url,s.license,s.catalog_id
+            FROM chunks c JOIN sources s ON s.id=c.source_id WHERE c.id IN ({placeholders})""", tuple(ids)).fetchall()
+    subject_counts = Counter(row["subject"] for row in rows if core in normalize_search(row["text"]))
+    max_subject_count = max(subject_counts.values(), default=0)
+    results = []
+    for row in rows:
         item = dict(row)
-        body = item["text"].lower()
-        title = item["title"].lower()
-        item["score"] = round(sum((3 if term in body else 0) + (2 if term in title else 0) for term in terms)
-                              + (7 if len(focus) >= 3 and focus.lower() in body else 0)
-                              + (4 if len(focus) >= 3 and focus.lower() in body[:110] else 0)
-                              + (1.5 if item["kind"] == "textbook" else 0)
-                              + (6 if likely_subject and item["subject"] == likely_subject else 0)
-                              + (9 if wants_definition and "一般地" in body and any(cue in body for cue in ("叫做", "称为", "就说")) else 0)
-                              + (5 if wants_definition and "唯一确定" in body else 0)
-                              + (7 if wants_definition and "那么我们就说" in body else 0), 2)
-        if item["score"] <= 0:
+        display, body, offsets = _compact_with_offsets(item["text"])
+        present = [token for token in plan["tokens"] if token in body]
+        if not present:
             continue
-        first = min((body.find(term) for term in terms if term in body), default=0)
-        start = max(0, first - 55)
-        item["snippet"] = ("…" if start else "") + item["text"][start:start + 220] + ("…" if start + 220 < len(item["text"]) else "")
+        anchor = core if core in body else max(present, key=len)
+        positions = [match.start() for match in re.finditer(re.escape(anchor), body)]
+        if not positions:
+            continue
+        best_score = -1000.0
+        best_position = positions[0]
+        best_window = ""
+        best_direct = False
+        best_near = ""
+        best_numeric = False
+        best_exercise = False
+        for position in positions[:35]:
+            window = body[max(0, position - 155):position + max(230, len(anchor) + 100)]
+            near = body[max(0, position - 75):position + len(anchor) + 65]
+            direct = bool(re.search(r"(?:叫做|称为|这就是|是指|定义为).{0,24}" + re.escape(core), near)
+                          or ("我们就说" in near and core in near)
+                          or (core in near and "点的轨迹" in near and ("叫做" in near or "称为" in near)))
+            score = 10.0 if anchor == core or len(anchor) >= 3 else 4.0
+            score += min(len(anchor), 10) * .6
+            score += min(window.count(anchor), 3) * 1.2
+            score += 7 if plan["phrase"] and plan["phrase"] in window and not plan["definition"] else 0
+            facet = plan["facet"]
+            facet_alias = facet[:-1] if facet.endswith("式") and len(facet) >= 3 else facet[2:] if facet.startswith("基本") else facet[2:] if facet.startswith("主要") else ""
+            facet_weighted = facet not in ("", "定义", "第一定义", "第二定义")
+            score += 15 if facet_weighted and facet in near else 8 if facet_weighted and facet_alias and facet_alias in near else 0
+            if facet_weighted and facet not in near and (not facet_alias or facet_alias not in near):
+                score -= 4
+            score += 2 * sum(token in window for token in present if token != anchor)
+            numeric_direct = bool(plan["numeric"] and re.search(re.escape(anchor) + r".{0,12}(?:等于|为|是)\s*\d", near))
+            exercise_context = bool(plan["numeric"] and re.search(r"(?:哪些是|下列.*?中|判断.*?对错|随机事件)", body[max(0, position - 150):position]))
+            if numeric_direct:
+                score += 18
+            if exercise_context:
+                score -= 20
+            if plan["definition"]:
+                score += 15 if direct else 0
+                score += 2 if any(cue in near for cue in ("一般地", "定律", "定义")) else 0
+                if core == "函数" and "我们就说" in near and "唯一确定" in window:
+                    score += 15
+                if core == "函数" and any(modifier + core in near for modifier in ("三角", "反比例", "正比例", "一次", "二次")):
+                    score -= 6
+            if core == "二次函数" and facet == "顶点式" and re.search(r"[y狔]\s*=\s*[a犪].{0,3}\([x狓].{0,8}\)\s*2.{0,4}[k犽]", window):
+                score += 18
+            if plan["facet"] == "作者" and position < 100 and "选自" in body[:600]:
+                score += 12
+            if position < 110:
+                score += 2
+            if score > best_score:
+                best_score, best_position, best_window, best_direct, best_near, best_numeric, best_exercise = score, position, window, direct, near, numeric_direct, exercise_context
+        opening = body[:260]
+        if "目录" in opening[:70]:
+            best_score -= 25
+        if "致同学" in opening[:80] or "本章导言" in opening[:80]:
+            best_score -= 10
+        if "索引" in opening and item["page"] and item["page"] > 20:
+            best_score -= 12
+        if item["page"] and item["page"] <= 4 and any(x in opening for x in ("isbn", "责任编辑", "普通高中教科书")):
+            best_score -= 10
+        second_alias = ("另一个角度" in body and "椭圆的定义" in body
+                        and all(word in body for word in ("准线", "焦点", "距离")))
+        ordinal_matched = plan["facet"] in best_window or second_alias
+        if plan["strict_ordinal"]:
+            if plan["facet"] in best_window:
+                best_score += 12
+            elif second_alias:
+                best_score += 15
+                best_direct = True
+            else:
+                best_score -= 18
+        if not exact_core:
+            best_score -= 2
+        if max_subject_count:
+            best_score += 8 * sqrt(subject_counts[item["subject"]] / max_subject_count)
+        if best_score < 7:
+            continue
+        begin = max(0, best_position - 75)
+        end = min(len(body), best_position + max(190, len(anchor) + 120))
+        snippet = " ".join(display[offsets[begin]:offsets[end - 1] + 1].split()) if offsets else ""
+        item["snippet"] = ("…" if begin else "") + snippet + ("…" if end < len(body) else "")
+        item["score"] = round(best_score, 2)
+        coherent = core in body or (best_numeric and all(token in best_near for token in ("三角形", "内角和")))
+        supported_definition = not plan["definition"] or best_direct or len(core) >= 3 or bool(plan["facet"] == "第二定义" and second_alias)
+        item["relevance"] = "strong" if best_score >= 14 and coherent and supported_definition and (not plan["numeric"] or best_numeric and not best_exercise) and (not plan["strict_ordinal"] or ordinal_matched) else "weak"
         item.pop("text")
-        result.append(item)
-    result.sort(key=lambda x: (-x["score"], x["source_id"], x["page"] or 0))
+        results.append(item)
+    results.sort(key=lambda item: (-item["score"], item["source_id"], item["page"] or 0))
     if not group:
-        return result[:limit]
+        return results[:limit]
     grouped = []
     seen = set()
-    for item in result:
-        key = (item["source_id"], item["page"] if item["kind"] == "textbook" else None)
+    for item in results:
+        key = (item["source_id"], item["page"])
         if key not in seen:
             grouped.append(item)
             seen.add(key)
@@ -273,3 +396,19 @@ def get_chunks(ids: list[int]) -> list[dict]:
         rows = db.execute(f"SELECT c.*,s.title,s.kind,s.stage,s.subject,s.edition,s.volume,s.url FROM chunks c JOIN sources s ON s.id=c.source_id WHERE c.id IN ({','.join('?' for _ in ids)})", ids).fetchall()
         by_id = {r["id"]: dict(r) for r in rows}
         return [by_id[i] for i in ids if i in by_id]
+
+
+def matching_pages(source_id: int, query: str) -> list[int]:
+    """Return every PDF page containing the normalized core query."""
+    plan = _query_plan(query)
+    terms = [plan["core"]] + [token for token in plan["tokens"] if token != plan["core"]]
+    with connect() as connection:
+        for term in terms:
+            if len(term) < 2:
+                continue
+            rows = connection.execute("""SELECT DISTINCT c.page FROM chunks_search x
+                JOIN chunks c ON c.id=x.rowid WHERE c.source_id=? AND c.page IS NOT NULL
+                AND x.text LIKE ? ORDER BY c.page""", (source_id, f"%{term}%")).fetchall()
+            if rows:
+                return [row["page"] for row in rows]
+    return []

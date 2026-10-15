@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import pymupdf
 
 from app import db
 from app.main import app
@@ -59,3 +60,72 @@ def test_only_textbooks_enter_index_and_suggestions(monkeypatch, tmp_path):
         assert False, 'Non-textbook sources must be rejected'
     except ValueError:
         pass
+
+
+def test_normalized_pages_grouping_and_cover(monkeypatch, tmp_path):
+    monkeypatch.setenv('TA_DATA_DIR', str(tmp_path))
+    db.init_db()
+    pdf_path = tmp_path / 'biology.pdf'
+    document = pymupdf.open()
+    for label in ('封面', '光合作用'):
+        page = document.new_page()
+        page.insert_text((40, 40), label, fontname='china-s')
+    document.save(pdf_path)
+    document.close()
+    source_id = db.add_source(textbook_meta('生物学', '初中-生物学') | {'file_path': str(pdf_path)}, [
+        (1, '', '封面'),
+        (2, '', '光 合 作 用：植物吸收光能。光合作用可以制造有机物。'),
+    ])
+    with TestClient(app) as client:
+        data = client.post('/api/search', json={'query': '光合作用'}).json()
+        assert len(data['results']) == 1
+        assert data['results'][0]['key_pages'][0]['page'] == 2
+        assert client.get(f'/api/sources/{source_id}/pages?q=光合作用').json()['pages'] == [2]
+        cover = client.get(f'/api/sources/{source_id}/cover')
+        assert cover.status_code == 200 and cover.headers['content-type'].startswith('image/png')
+
+
+def test_broad_question_combines_textbook_pages(monkeypatch, tmp_path):
+    monkeypatch.setenv('TA_DATA_DIR', str(tmp_path))
+    db.init_db()
+    db.add_source(textbook_meta('历史', '初中-历史') | {'title': '历史 七年级下册'}, [
+        (11, '', '中国古代科举制度的形成：隋炀帝时开设进士科，科举制度形成。'),
+        (51, '', '科举制度在宋朝扩大取士名额，殿试成为常制。'),
+        (89, '', '明清科举制度实行八股取士，清末废除科举制度。'),
+    ])
+    async def fake_answer(question, evidence, mode, history):
+        assert mode == 'grounded'
+        assert {item['page'] for item in evidence} == {11, 51, 89}
+        return '隋朝形成[1]，宋朝发展[2]，明清以后废除[3]。'
+    monkeypatch.setattr('app.main.answer', fake_answer)
+    with TestClient(app) as client:
+        data = client.post('/api/chat', json={'query': '中国古代科举制度如何发展？'}).json()
+    assert data['evidence_status'] == 'found'
+    assert {item['page'] for item in data['citations']} == {11, 51, 89}
+
+
+def test_typo_rewrites_topic_before_model_answer(monkeypatch, tmp_path):
+    monkeypatch.setenv('TA_DATA_DIR', str(tmp_path))
+    db.init_db()
+    db.add_source(textbook_meta('生物学', '初中-生物学'), [
+        (38, '', '光合作用在叶绿体中进行，光反应把光能转成化学能，碳反应固定二氧化碳。'),
+    ])
+    async def fake_answer(question, evidence, mode, history):
+        assert mode == 'grounded' and evidence[0]['page'] == 38
+        return '光合作用分为光反应和碳反应[1]。'
+    monkeypatch.setattr('app.main.answer', fake_answer)
+    with TestClient(app) as client:
+        data = client.post('/api/chat', json={'query': '光合做用的过程是什么？'}).json()
+    assert data['interpreted_query'] == '光合作用的过程'
+    assert data['citations'][0]['page'] == 38
+
+
+def test_false_exercise_statement_is_not_answer_evidence(monkeypatch, tmp_path):
+    monkeypatch.setenv('TA_DATA_DIR', str(tmp_path))
+    db.init_db()
+    db.add_source(textbook_meta(), [
+        (18, '', '三角形的内角和等于180°。我们可以通过平行线证明这个结论。'),
+        (135, '', '下列哪些是随机事件？任意画一个三角形，其内角和是360°；投篮一次未投中。'),
+    ])
+    strong = [item for item in db.search('三角形内角和是多少？') if item['relevance'] == 'strong']
+    assert [item['page'] for item in strong] == [18]

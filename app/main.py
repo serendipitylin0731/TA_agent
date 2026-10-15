@@ -3,6 +3,7 @@ import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import pymupdf
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -72,16 +73,35 @@ def source_content(source_id: int):
 
 @app.post("/api/search")
 def search(request: SearchRequest):
-    results = db.search(request.query, request.stage, request.subject, request.limit)
+    results = [item for item in db.search(request.query, request.stage, request.subject, request.limit * 12)
+               if item["relevance"] == "strong"]
     proposals = db.suggest(request.query, request.stage, request.subject)
     corrected_query = ""
     if not results and proposals["corrections"]:
         candidate = proposals["corrections"][0]
         if candidate != request.query:
-            results = db.search(candidate, request.stage, request.subject, request.limit)
+            results = [item for item in db.search(candidate, request.stage, request.subject, request.limit * 12)
+                       if item["relevance"] == "strong"]
             if results:
                 corrected_query = candidate
-    return {"results": results, "corrected_query": corrected_query, "suggestions": proposals}
+    if not results:
+        plan = db._query_plan(request.query)
+        term_suggestions = db.suggest(plan["core"], request.stage, request.subject)["corrections"]
+        for term in term_suggestions[:3]:
+            candidate = term + ("的" + plan["facet"] if plan["facet"] else "")
+            results = [item for item in db.search(candidate, request.stage, request.subject, request.limit * 12)
+                       if item["relevance"] == "strong"]
+            if results:
+                corrected_query = candidate
+                proposals["corrections"] = list(dict.fromkeys([candidate] + proposals["corrections"]))[:6]
+                break
+    grouped = {}
+    for item in results:
+        source = grouped.setdefault(item["source_id"], {**item, "key_pages": []})
+        if item["page"] and len(source["key_pages"]) < 8:
+            source["key_pages"].append({"page": item["page"], "snippet": item["snippet"], "score": item["score"]})
+    return {"results": list(grouped.values())[:request.limit],
+            "corrected_query": corrected_query, "suggestions": proposals}
 
 
 @app.get("/api/suggest")
@@ -91,18 +111,46 @@ def suggestions(q: str = Query(min_length=2, max_length=60), stage: str = "", su
 
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
-    matches = db.search(request.query, request.stage, request.subject, 6) if request.mode == "grounded" else []
-    if matches and matches[0]["score"] < 7.5:
-        matches = []
-    if matches and re.search(r"定义|什么是", request.query) and len(matches) > 1 and matches[0]["score"] >= matches[1]["score"] + 5:
-        matches = matches[:1]
+    broad = bool(re.search(r"发展|演变|历程|变化|沿革", request.query))
+    candidates = db.search(request.query, request.stage, request.subject, 90) if request.mode == "grounded" else []
+    if broad:
+        topic = db._query_plan(request.query)["core"]
+        topic = re.sub(r"^(中国古代|中国近代|我国古代|我国)", "", topic)
+        if len(topic) >= 2:
+            more = db.search(topic, request.stage, request.subject, 90)
+            candidates = list({(item["source_id"], item["page"]): item for item in candidates + more}.values())
+            candidates.sort(key=lambda item: -item["score"])
+    matches = [item for item in candidates if item["relevance"] == "strong"]
+    if broad and matches:
+        focus = matches[0]["subject"]
+        matches = [item for item in matches if item["subject"] == focus]
+        selected = []
+        used_sources = {}
+        for item in matches:
+            source_pages = used_sources.setdefault(item["source_id"], [])
+            if len(source_pages) >= 3 or any(abs((item["page"] or 0) - page) < 2 for page in source_pages):
+                continue
+            selected.append(item)
+            source_pages.append(item["page"] or 0)
+            if len(selected) >= 8:
+                break
+        matches = selected
+    elif matches:
+        top_score = matches[0]["score"]
+        matches = [item for item in matches if item["score"] >= top_score - 7][:6]
+        if re.search(r"定义|什么是", request.query) and top_score >= (matches[1]["score"] + 6 if len(matches) > 1 else 0):
+            matches = matches[:1]
     interpreted_query = ""
     if request.mode == "grounded" and not matches:
+        plan = db._query_plan(request.query)
         corrections = db.suggest(request.query, request.stage, request.subject)["corrections"]
+        if not corrections:
+            corrections = [term + ("的" + plan["facet"] if plan["facet"] else "")
+                           for term in db.suggest(plan["core"], request.stage, request.subject)["corrections"]]
         if corrections:
             candidate = corrections[0]
-            matches = db.search(candidate, request.stage, request.subject, 6)
-            if matches and matches[0]["score"] >= 7.5:
+            matches = [item for item in db.search(candidate, request.stage, request.subject, 6) if item["relevance"] == "strong"]
+            if matches:
                 interpreted_query = candidate
             else:
                 matches = []
@@ -131,6 +179,31 @@ def source_file(source_id: int):
     if not source or not source["file_path"] or not Path(source["file_path"]).is_file():
         raise HTTPException(404, "本地文件不存在")
     return FileResponse(source["file_path"], media_type="application/pdf" if source["file_path"].endswith(".pdf") else "text/plain")
+
+
+@app.get("/api/sources/{source_id}/pages")
+def source_pages(source_id: int, q: str = Query(min_length=2, max_length=300)):
+    if not db.get_source(source_id):
+        raise HTTPException(404, "教材不存在")
+    return {"pages": db.matching_pages(source_id, q)}
+
+
+@app.get("/api/sources/{source_id}/cover")
+def source_cover(source_id: int):
+    source = db.get_source(source_id)
+    if not source or not source["file_path"] or Path(source["file_path"]).suffix.lower() != ".pdf":
+        raise HTTPException(404, "教材封面不存在")
+    path = Path(source["file_path"])
+    if not path.is_file():
+        raise HTTPException(404, "本地文件不存在")
+    cover_dir = db.data_dir() / "covers"
+    cover_dir.mkdir(parents=True, exist_ok=True)
+    cover = cover_dir / f"{source_id}-{path.stat().st_mtime_ns}.png"
+    if not cover.exists():
+        with pymupdf.open(path) as document:
+            pixmap = document[0].get_pixmap(matrix=pymupdf.Matrix(.42, .42), alpha=False)
+            cover.write_bytes(pixmap.tobytes("png"))
+    return FileResponse(cover, media_type="image/png")
 
 
 app.mount("/", StaticFiles(directory=STATIC, html=True), name="web")

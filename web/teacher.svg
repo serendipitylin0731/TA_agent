@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="老师剪影">
+  <rect width="48" height="48" rx="12" fill="#e7f3e9"/>
+  <path d="M28 8h12v16H28" fill="none" stroke="#5d9776" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M31 14h6M31 18h4" stroke="#5d9776" stroke-width="2" stroke-linecap="round"/>
+  <path d="M16 12c1-4 11-5 14 1l-2 5H17z" fill="#315b50"/>
+  <circle cx="23" cy="19" r="6" fill="#315b50"/>
+  <path d="M11 40c0-8 5-13 12-13 3 0 5 1 7 3l4-6 3 2-4 10-5-3v7z" fill="#315b50"/>
+  <path d="M21 28l2 5 2-5" fill="#b6d6bf"/>
+</svg>

@@ -13,7 +13,9 @@ const sampleExamples = () => {
   for(let i=pool.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[pool[i],pool[j]]=[pool[j],pool[i]]}
   return pool.slice(0,4);
 };
-const state = {view:'chat',stage:'',subject:'',searchQuery:'',searchResults:[],searchSuggestions:{completions:[],corrections:[]},searchCorrected:'',catalog:[],sources:[],status:null,messages:[],busy:false,notice:'',reader:null,readerReturn:null,catalogSelection:null,examples:sampleExamples()};
+const readHistory = key => {try {const value=JSON.parse(localStorage.getItem(key)||'[]');return Array.isArray(value)?value.slice(-10):[]} catch {return []}};
+const state = {view:'chat',stage:'',subject:'',searchQuery:'',searchResults:[],searchSuggestions:{completions:[],corrections:[]},searchCorrected:'',catalog:[],sources:[],status:null,messages:readHistory('ta-chat-v2').flatMap(item=>item.messages||[]),searchHistory:readHistory('ta-search-v2'),busy:false,notice:'',reader:null,readerReturn:null,catalogSelection:null,examples:sampleExamples()};
+const saveHistory = (key,items) => {try {localStorage.setItem(key,JSON.stringify(items.slice(-10)))} catch {}};
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const api = async (path, options={}) => {
@@ -36,7 +38,7 @@ function render() {
     <aside class="sidebar"><div class="brand"><div class="brand-icon"><img src="/logo.svg" alt=""></div><div><strong>知页 <em>TA</em></strong><small>TEACHING ATLAS AGENT</small></div></div>
       <div class="nav-label">工作空间</div><nav aria-label="主导航">
         ${[['chat','spark','Chat 问答'],['search','search','查询原文'],['catalog','book','阅读教材']].map(([key,ic,label])=>`<button class="nav-item ${state.view===key?'active':''}" data-view="${key}">${icon(ic,18)}<span>${label}</span></button>`).join('')}
-      </nav><div class="sidebar-grow"></div><div class="sidebar-card"><span class="orb">${icon('shield',18)}</span><strong>有据可查，才值得相信</strong><p>教材有出处；若没有匹配内容，会单独标注回答依据。</p></div><div class="sidebar-foot"><span class="online-dot"></span> 本地知识库 <span class="version">v0.1</span></div></aside>
+      </nav><div class="sidebar-grow"></div><a class="sidebar-card" href="/about.html"><span class="orb">${icon('shield',18)}</span><strong>有据可查，才值得相信</strong><p>了解设计初衷、功能与教材覆盖 →</p></a><a class="sidebar-foot" href="mailto:serendipity_lin@sjtu.edu.cn">有问题请联系<br>serendipity_lin@sjtu.edu.cn</a></aside>
     <main class="main"><header class="topbar"><span>教学知识工作台 <b>/</b> ${title[0]}</span><div class="top-status"><span class="tiny-dot"></span>${state.status?.deepseek_configured?'AI 问答已就绪':'AI 问答待配置'}</div></header>
       <div class="page"><div class="heading"><div><div class="eyebrow"><span></span> EVIDENCE FIRST LEARNING <span></span></div><h1>${title[0]}<i>.</i></h1><p>${title[1]}</p></div></div>
       ${state.view==='chat'?chatView():state.view==='search'?searchView():catalogView()}
@@ -44,6 +46,7 @@ function render() {
     </main>${state.notice?`<div class="toast" role="status">${esc(state.notice)}</div>`:''}</div>`;
   bind();
   if(window.renderMathInElement)document.querySelectorAll('.message-bubble').forEach(el=>window.renderMathInElement(el,{delimiters:[{left:'$$',right:'$$',display:true},{left:'\\[',right:'\\]',display:true},{left:'\\(',right:'\\)',display:false}],throwOnError:false}));
+  if(state.view==='chat'&&state.messages.length)requestAnimationFrame(()=>{const body=document.getElementById('chatBody');if(body)body.scrollTop=body.scrollHeight});
 }
 
 function filters() {
@@ -52,13 +55,13 @@ function filters() {
 function sourceBadge() {return '<span class="badge textbook">教材原件</span>';}
 function locator(item) {return item.page?`PDF 第 ${item.page} 页`:'文档';}
 function resultCard(item,index) {
-  return `<article class="result-card" data-result="${index}"><div class="result-top">${sourceBadge(item.kind)}<span class="result-meta">${esc(item.stage)} · ${esc(item.subject)}</span></div><h3>${esc(item.title)}</h3><p>${esc(item.snippet)}</p><div class="result-bottom"><span>${icon('pin',14)} ${esc(item.volume||item.edition||'教材')} · ${locator(item)}</span><button data-open-result="${index}">在页面阅读 ${icon('arrow',14)}</button></div></article>`;
+  return `<button class="result-card" data-open-result="${index}"><div class="result-top">${sourceBadge(item.kind)}<span class="result-meta">${esc(item.stage)} · ${esc(item.subject)}</span></div><h3>${esc(item.title)}</h3><p>${esc(item.snippet)}</p><div class="key-pages"><strong>关键页码</strong>${(item.key_pages||[]).map(p=>`<span>第 ${p.page} 页</span>`).join('')}</div><div class="result-bottom"><span>${icon('pin',14)} ${esc(item.volume||item.edition||'教材')} · ${locator(item)}</span><span>点击整张卡片阅读 ${icon('arrow',14)}</span></div></button>`;
 }
 function readerView() {
   const r=state.reader;
   const s=r.source;
   const backLabel={chat:'Chat 问答',search:'查询原文',catalog:'阅读教材'}[state.readerReturn?.view]||'上一页';
-  return `<div class="reader-screen"><header class="reader-toolbar"><button class="reader-back" data-close-reader>${icon('arrow',17)} 返回 ${backLabel}</button><div class="reader-brand">知页 <span>· 原文阅读</span></div>${s.url?`<a class="reader-origin" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">资料来源 ${icon('external',15)}</a>`:''}</header><div class="reader-summary">${sourceBadge(s.kind)}<div><h1>${esc(s.title)}</h1><p>${esc([s.stage,s.subject,s.edition,s.volume].filter(Boolean).join(' · '))}</p></div><span class="reader-location">${s.file_type==='.pdf'?`PDF 原始页序${r.page?' · 第 '+r.page+' 页':''}`:'原文资料'}</span></div><main class="reader-stage">${s.file_type==='.pdf'?`<iframe class="reader-full-pdf" title="${esc(s.title)} PDF 阅读器" src="/api/sources/${s.id}/file${r.page?'#page='+r.page:''}"></iframe>`:`<article class="reader-document">${esc(r.text||'暂无可阅读正文')}</article>`}</main><div class="reader-screen-foot">${s.file_type==='.pdf'?'PDF 页序可能与教材印刷页码不同':`来源：${esc(s.publisher)} · ${esc(s.license)}`}</div></div>`;
+  return `<div class="reader-screen"><header class="reader-toolbar"><button class="reader-back" data-close-reader>${icon('arrow',17)} 返回 ${backLabel}</button><div class="reader-brand">知页 <span>· 双页阅读</span></div>${s.url?`<a class="reader-origin" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">资料来源 ${icon('external',15)}</a>`:''}</header><div class="reader-summary">${sourceBadge(s.kind)}<div><h1>${esc(s.title)}</h1><p>${esc([s.stage,s.subject,s.edition,s.volume].filter(Boolean).join(' · '))}</p></div><span class="reader-location">PDF 第 ${r.page} 页</span></div><div class="reader-controls"><button id="readerPrev" aria-label="上一页">← 上一页</button><span id="readerStatus">正在加载教材…</span><label>跳转到第 <input id="readerPageInput" type="number" min="1" value="${r.page}"> 页</label><button id="readerNextHit">下一个关键词位置</button><span id="readerHitCount"></span><button id="readerNext" aria-label="下一页">下一页 →</button></div><main class="reader-stage reader-spread"><button class="reader-edge" id="readerPrevEdge" aria-label="上一页">‹</button><div class="reader-paper" id="readerPaperLeft"><canvas></canvas><span class="paper-page-number"></span></div><div class="reader-paper" id="readerPaperRight"><canvas></canvas><span class="paper-page-number"></span></div><button class="reader-edge" id="readerNextEdge" aria-label="下一页">›</button></main><div class="reader-screen-foot">键盘 ← → 或点击两侧翻页 · 页序为 PDF 页码</div></div>`;
 }
 function chatView() {
   const empty=state.messages.length===0;
@@ -66,7 +69,7 @@ function chatView() {
     <div class="chat-filters"><span>回答范围</span>${filters()}</div>
     <div class="chat-body" id="chatBody">${empty?`<div class="chat-empty"><div class="empty-symbol">✳</div><span>你的教学研究伙伴</span><h3>提问，从一个知识点开始</h3><p>可以问概念、比较观点、寻找出处，或让助手<br>根据教材梳理讲解思路。</p><div class="suggestions">${state.examples.map(q=>`<button data-prompt="${esc(q)}">${esc(q)} ${icon('arrow',14)}</button>`).join('')}</div></div>`:state.messages.map((message,index)=>messageHTML(message,index)).join('')}${state.busy?'<div class="typing"><i></i><i></i><i></i> 正在检索教材并整理回答</div>':''}</div>
     <form id="chatForm" class="composer"><textarea id="chatInput" rows="2" maxlength="1500" placeholder="输入你的教学问题…" aria-label="教学问题"></textarea><div class="composer-bottom"><span>Enter 发送 · Shift + Enter 换行</span><button type="submit" ${state.busy?'disabled':''}>发送 ${icon('send',17)}</button></div></form>
-  </section></div>`;
+  </section>${state.messages.length?`<div class="recent-note">本机保存最近 10 条对话，刷新页面后可继续查看。</div>`:''}</div>`;
 }
 function messageHTML(message,index) {
   const isUser=message.role==='user';
@@ -75,12 +78,13 @@ function messageHTML(message,index) {
   if(!isUser&&window.katex)body=body.replace(/\\\[([\s\S]*?)\\\]/g,(_,math)=>`<div class="math-block">${window.katex.renderToString(math.replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&'),{displayMode:true,throwOnError:false})}</div>`);
   body=body.replace(/\n/g,'<br>');
   if(!isUser) body=body.replace(/\[(\d+)\]/g,(_,n)=>message.citations?.some(c=>c.number===Number(n))?`<button class="cite" data-cite="${n}" data-message="${index}">[${n}]</button>`:`[${n}]`);
-  return `<div class="message ${isUser?'user':'assistant'}"><div class="avatar">${isUser?icon('user',19):'知'}</div><div class="message-main"><span class="message-name">${isUser?'你':'知页助手'}</span><div class="message-bubble">${body}</div>${!isUser&&message.notice?`<div class="answer-notice">${icon('shield',14)} ${esc(message.notice)}</div>`:''}${!isUser&&message.citations?.length?`<div class="reference-title">参考教材与定位</div><div class="message-citations">${message.citations.map(c=>`<button data-cite="${c.number}" data-message="${index}"><strong>[${c.number}] ${esc(c.title)}</strong><small>${esc([c.stage,c.subject,c.edition,c.volume].filter(Boolean).join(' · '))} · ${c.page?'PDF 第 '+c.page+' 页':'教材正文'}</small>${icon('arrow',12)}</button>`).join('')}</div>`:''}</div></div>`;
+  return `<div class="message ${isUser?'user':'assistant'}"><div class="avatar">${isUser?icon('user',19):'<img src="/teacher.svg" alt="老师">'}</div><div class="message-main"><span class="message-name">${isUser?'你':'知页助手'}</span><div class="message-bubble">${body}</div>${!isUser&&message.notice?`<div class="answer-notice">${icon('shield',14)} ${esc(message.notice)}</div>`:''}${!isUser&&message.citations?.length?`<div class="reference-title">参考教材与定位</div><div class="message-citations">${message.citations.map(c=>`<button data-cite="${c.number}" data-message="${index}"><strong>[${c.number}] ${esc(c.title)}</strong><small>${esc([c.stage,c.subject,c.edition,c.volume].filter(Boolean).join(' · '))} · ${c.page?'PDF 第 '+c.page+' 页':'教材正文'}</small>${icon('arrow',12)}</button>`).join('')}</div>`:''}</div></div>`;
 }
 function searchView() {
   return `<div class="search-layout"><section class="search-main"><div class="search-hero"><div class="section-kicker">TEXTBOOK SEARCH</div><h2>找到知识，也找到教材页码</h2><p>支持关键词、模糊检索与错别字建议；结果均来自已接入的教材。</p><form id="searchForm"><div class="search-box">${icon('search',21)}<input id="searchInput" value="${esc(state.searchQuery)}" placeholder="试试搜索：光合作用 / 函数 / 近代中国…" autocomplete="off"/><button type="submit">开始检索 ${icon('arrow',16)}</button></div><div class="search-suggestions" id="searchSuggestions">${suggestionHTML()}</div></form></div>
     <div class="search-controls">${filters()}</div>
     <div class="results-heading"><span>${state.searchCorrected?`未找到“${esc(state.searchQuery)}”，按“${esc(state.searchCorrected)}”显示结果`:state.searchQuery?`“${esc(state.searchQuery)}” 的结果`:'开始一次检索'}</span><small>${state.searchResults.length} 条结果</small></div>
+    ${state.searchHistory.length?`<div class="search-history"><strong>最近检索</strong>${[...state.searchHistory].reverse().map((item,index)=>`<button data-history-index="${index}">${esc(item.query)}</button>`).join('')}</div>`:''}
     ${state.searchResults.length?`<div class="result-list">${state.searchResults.map(resultCard).join('')}</div>`:emptyResults()}
   </section></div>`;
 }
@@ -90,25 +94,40 @@ function suggestionHTML(){
   return items.length?items.map(item=>`<button type="button" data-suggest-value="${esc(item.value)}"><span>${item.label}</span>${esc(item.value)}</button>`).join(''):'';
 }
 function emptyResults(){return `<div class="results-empty">${icon('search',29)}<h3>这里还没有结果</h3><p>输入关键词开始检索；也可以更换学段、学科或试试短一些的关键词。</p></div>`;}
+const chineseNumber = value => ({一:1,二:2,三:3,四:4,五:5,六:6,七:7,八:8,九:9,十:10})[value]||Number(value)||0;
+function bookOrder(book){
+  const value=`${book.volume} ${book.title}`;
+  const grade=value.match(/([七八九]|[789])年级/);
+  if(grade)return (chineseNumber(grade[1])-7)*10+(/上册/.test(value)?0:/下册/.test(value)?1:2);
+  const type=/选择性必修|选修/.test(value)?100:/必修/.test(value)?0:200;
+  const match=value.match(/(?:第\s*([一二三四五六七八九十\d]+)\s*册|([一二三四五六七八九十\d]+)册)/);
+  const volume=match?chineseNumber(match[1]||match[2]):0;
+  const sequence=/上/.test(value)?1:/中/.test(value)?2:/下/.test(value)?3:0;
+  return type+volume*10+sequence;
+}
 function catalogView() {
   if(state.catalogSelection){
     const item=state.catalog.find(x=>x.id===state.catalogSelection);
     if(!item){state.catalogSelection=null;return catalogView()}
-    const books=state.sources.filter(x=>x.kind==='textbook'&&x.catalog_id===item.id).sort((a,b)=>a.volume.localeCompare(b.volume,'zh-CN'));
-    return `<div class="catalog-subject"><button class="catalog-back" data-close-subject>${icon('arrow',16)} 返回教材分类</button><span class="section-kicker">${esc(item.stage)} · ${esc(item.edition)}</span><h2>${esc(item.stage)} · ${esc(item.subject)}</h2><p>已接入 ${books.length} 册，点击教材进入全屏阅读。</p><div class="book-grid">${books.map(book=>`<button class="book-item" data-read-book="${book.id}">${icon('book',22)}<span><strong>${esc(book.volume||book.title)}</strong><small>${esc(book.title)}</small></span>${icon('arrow',16)}</button>`).join('')}</div>${!books.length?'<div class="results-empty"><h3>该学科暂无已接入教材</h3></div>':''}</div>`;
+    const books=state.sources.filter(x=>x.kind==='textbook'&&x.catalog_id===item.id).sort((a,b)=>bookOrder(a)-bookOrder(b)||a.volume.localeCompare(b.volume,'zh-CN',{numeric:true}));
+    return `<div class="catalog-subject"><button class="catalog-back" data-close-subject>${icon('arrow',16)} 返回教材分类</button><span class="section-kicker">${esc(item.stage)} · ${esc(item.edition)}</span><h2>${esc(item.stage)} · ${esc(item.subject)}</h2><p>已接入 ${books.length} 册，点击教材进入全屏阅读。</p><div class="book-grid">${books.map(book=>`<button class="book-item" data-read-book="${book.id}"><img class="book-cover" src="/api/sources/${book.id}/cover" alt="${esc(book.title)}封面" loading="lazy"><span><strong>${esc(book.volume||book.title)}</strong><small>${esc(book.title)}</small></span>${icon('arrow',16)}</button>`).join('')}</div>${!books.length?'<div class="results-empty"><h3>该学科暂无已接入教材</h3></div>':''}</div>`;
   }
   return `<div class="catalog-intro"><div><span class="section-kicker">ORIGINAL TEXTBOOK READER</span><h2>阅读原版教材</h2><p>先选择学段，再进入学科，查看对应的教材册次。</p></div><div class="catalog-symbol">${icon('book',33)}</div></div>${['初中','高中'].map(stage=>`<section class="stage-section"><div class="source-list-title"><h3>${stage}区</h3><span>${state.catalog.filter(x=>x.stage===stage).length} 个学科</span></div><div class="catalog-grid">${state.catalog.filter(x=>x.stage===stage).map(item=>`<button class="catalog-card subject-card" data-open-subject="${esc(item.id)}"><div class="book-glyph">${icon('book',25)}</div><h3>${esc(item.subject)}</h3><p>${esc(item.edition)}</p><div class="catalog-detail"><span>已接入 ${item.textbook_count||0} 册</span>${icon('arrow',15)}</div></button>`).join('')}</div></section>`).join('')}`;
 }
 let noticeTimer;
 function notice(value){state.notice=value;document.querySelector('.toast')?.remove();app.insertAdjacentHTML('beforeend',`<div class="toast" role="status">${esc(value)}</div>`);clearTimeout(noticeTimer);noticeTimer=setTimeout(()=>{state.notice='';document.querySelector('.toast')?.remove()},4200)}
 async function refresh(){const [status,catalog,sources]=await Promise.all([api('/api/status'),api('/api/catalog'),api('/api/sources')]);state.status=status;state.catalog=catalog;state.sources=sources;render()}
-async function openReader(sourceId,page=0,returnView=state.view){
+let readerModule, readerOpenToken=0;
+async function openReader(sourceId,page=1,returnView=state.view,query=''){
+  const token=++readerOpenToken;
   const previous={view:returnView,scrollY:window.scrollY,bookScroll:document.querySelector('.book-list')?.scrollTop||0,
     chatScroll:document.getElementById('chatBody')?.scrollTop||0,chatDraft:document.getElementById('chatInput')?.value||''};
-  try{const data=await api(`/api/sources/${sourceId}/content`);state.reader={...data,page};state.readerReturn=previous;state.view='reader';render();window.scrollTo(0,0)}
+  try{const [data,hits]=await Promise.all([api(`/api/sources/${sourceId}/content`),query?api(`/api/sources/${sourceId}/pages?q=${encodeURIComponent(query)}`).catch(()=>({pages:[]})):Promise.resolve({pages:[]})]);if(token!==readerOpenToken)return;state.reader={...data,page:Math.max(1,page),hitPages:hits.pages};state.readerReturn=previous;state.view='reader';render();window.scrollTo(0,0);readerModule=await import('/reader.js');if(token===readerOpenToken)await readerModule.mountReader(sourceId,Math.max(1,page),hits.pages)}
   catch(error){notice(error.message)}
 }
 function closeReader(){
+  readerOpenToken++;
+  readerModule?.unmountReader();
   const previous=state.readerReturn||{view:'search',scrollY:0};
   state.reader=null;state.readerReturn=null;state.view=previous.view;render();
   requestAnimationFrame(()=>{window.scrollTo(0,previous.scrollY||0);
@@ -120,12 +139,13 @@ function closeReader(){
 function bind(){
   document.querySelectorAll('[data-view]').forEach(el=>el.onclick=()=>{state.view=el.dataset.view;if(state.view==='chat'&&!state.messages.length)state.examples=sampleExamples();state.notice='';render()});
   document.querySelectorAll('[data-prompt]').forEach(el=>el.onclick=()=>sendChat(el.dataset.prompt));
-  document.querySelectorAll('[data-open-result]').forEach(el=>el.onclick=()=>{const item=state.searchResults[Number(el.dataset.openResult)];openReader(item.source_id,item.page,'search')});
-  document.querySelectorAll('[data-read-book]').forEach(el=>el.onclick=()=>openReader(Number(el.dataset.readBook),0,'catalog'));
+  document.querySelectorAll('[data-open-result]').forEach(el=>el.onclick=()=>{const item=state.searchResults[Number(el.dataset.openResult)];openReader(item.source_id,item.page,'search',state.searchCorrected||state.searchQuery)});
+  document.querySelectorAll('[data-read-book]').forEach(el=>el.onclick=()=>openReader(Number(el.dataset.readBook),1,'catalog'));
   document.querySelectorAll('[data-close-reader]').forEach(el=>el.onclick=closeReader);
   document.querySelectorAll('[data-open-subject]').forEach(el=>el.onclick=()=>{state.catalogSelection=el.dataset.openSubject;render();window.scrollTo(0,0)});
   document.querySelectorAll('[data-close-subject]').forEach(el=>el.onclick=()=>{state.catalogSelection=null;render()});
-  document.querySelectorAll('[data-cite]').forEach(el=>el.onclick=()=>{const citation=state.messages[Number(el.dataset.message)]?.citations?.find(x=>x.number===Number(el.dataset.cite));if(citation)openReader(citation.source_id,citation.page,'chat')});
+  document.querySelectorAll('[data-cite]').forEach(el=>el.onclick=()=>{const index=Number(el.dataset.message);const citation=state.messages[index]?.citations?.find(x=>x.number===Number(el.dataset.cite));const question=[...state.messages.slice(0,index)].reverse().find(x=>x.role==='user')?.content||'';if(citation)openReader(citation.source_id,citation.page,'chat',question)});
+  document.querySelectorAll('[data-history-index]').forEach(el=>el.onclick=()=>{const item=[...state.searchHistory].reverse()[Number(el.dataset.historyIndex)];state.stage=item.stage;state.subject=item.subject;runSearch(item.query)});
   document.getElementById('stageFilter')?.addEventListener('change',event=>{state.stage=event.target.value;render()});
   document.getElementById('subjectFilter')?.addEventListener('change',event=>{state.subject=event.target.value;render()});
   const chatForm=document.getElementById('chatForm');if(chatForm){chatForm.onsubmit=e=>{e.preventDefault();sendChat(document.getElementById('chatInput').value)};document.getElementById('chatInput').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();chatForm.requestSubmit()}}}
@@ -135,7 +155,7 @@ function bind(){
 let suggestionTimer=0,suggestionSeq=0;
 function bindSuggestionButtons(){document.querySelectorAll('[data-suggest-value]').forEach(el=>el.onclick=()=>runSearch(el.dataset.suggestValue))}
 function queueSuggestions(query){clearTimeout(suggestionTimer);const seq=++suggestionSeq;const box=document.getElementById('searchSuggestions');if(query.trim().length<2){state.searchSuggestions={completions:[],corrections:[]};if(box)box.innerHTML='';return}suggestionTimer=setTimeout(async()=>{try{const data=await api('/api/suggest?q='+encodeURIComponent(query)+'&stage='+encodeURIComponent(state.stage)+'&subject='+encodeURIComponent(state.subject));if(seq!==suggestionSeq)return;state.searchSuggestions=data;if(box){box.innerHTML=suggestionHTML();bindSuggestionButtons()}}catch{}},220)}
-async function runSearch(query){query=query.trim();if(query.length<2)return notice('请输入至少两个字的关键词');clearTimeout(suggestionTimer);suggestionSeq++;state.searchQuery=query;state.searchCorrected='';state.searchSuggestions={completions:[],corrections:[]};state.busy=true;render();try{const data=await post('/api/search',{query,stage:state.stage,subject:state.subject,limit:16});state.searchResults=data.results;state.searchCorrected=data.corrected_query||'';state.searchSuggestions=data.suggestions||state.searchSuggestions}catch(error){notice(error.message)}finally{state.busy=false;render()}}
-async function sendChat(query){query=query.trim();if(query.length<2||state.busy)return;const history=state.messages.map(x=>({role:x.role,content:x.content})).slice(-6);state.messages.push({role:'user',content:query});state.busy=true;render();const body=document.getElementById('chatBody');body?.scrollTo({top:body.scrollHeight});try{const data=await post('/api/chat',{query,mode:'grounded',stage:state.stage,subject:state.subject,history});state.messages.push({role:'assistant',content:data.answer,citations:data.citations,mode:data.mode,notice:data.evidence_status==='not_found'?'教材库未检索到合适内容；本回答由模型生成，请核对。':''})}catch(error){state.messages.push({role:'assistant',content:error.message,citations:[],mode:'error'})}finally{state.busy=false;render();const updated=document.getElementById('chatBody');updated?.scrollTo({top:updated.scrollHeight})}}
+async function runSearch(query){query=query.trim();if(query.length<2)return notice('请输入至少两个字的关键词');clearTimeout(suggestionTimer);suggestionSeq++;state.searchQuery=query;state.searchCorrected='';state.searchSuggestions={completions:[],corrections:[]};state.busy=true;render();try{const data=await post('/api/search',{query,stage:state.stage,subject:state.subject,limit:16});state.searchResults=data.results;state.searchCorrected=data.corrected_query||'';state.searchSuggestions=data.suggestions||state.searchSuggestions;state.searchHistory=[...state.searchHistory.filter(x=>x.query!==query),{query,stage:state.stage,subject:state.subject}].slice(-10);saveHistory('ta-search-v2',state.searchHistory)}catch(error){notice(error.message)}finally{state.busy=false;render()}}
+async function sendChat(query){query=query.trim();if(query.length<2||state.busy)return;const history=state.messages.map(x=>({role:x.role,content:x.content})).slice(-6);state.messages.push({role:'user',content:query});state.busy=true;render();const body=document.getElementById('chatBody');body?.scrollTo({top:body.scrollHeight});try{const data=await post('/api/chat',{query,mode:'grounded',stage:state.stage,subject:state.subject,history});state.messages.push({role:'assistant',content:data.answer,citations:data.citations,mode:data.mode,notice:data.evidence_status==='not_found'?'教材库未检索到合适内容；以下回答由模型生成，请核对。':''})}catch(error){state.messages.push({role:'assistant',content:error.message,citations:[],mode:'error'})}finally{state.busy=false;const exchanges=[];for(let i=0;i<state.messages.length-1;i++)if(state.messages[i].role==='user'&&state.messages[i+1].role==='assistant')exchanges.push({messages:[state.messages[i],state.messages[i+1]]});saveHistory('ta-chat-v2',exchanges);render()}}
 
 refresh().catch(error=>{app.innerHTML=`<div class="fatal">知识库暂时无法启动：${esc(error.message)}</div>`});
