@@ -246,7 +246,8 @@ def suggest(query: str, stage: str = "", subject: str = "", limit: int = 6) -> d
         if ratio >= (0.72 if len(value) >= 4 else 0.6):
             scored.append((ratio, min(row["popularity"], 100), term))
     scored.sort(key=lambda row: (-row[0], -row[1], len(row[2])))
-    return {"completions": comp, "corrections": [row[2] for row in scored[:limit]]}
+    return {"completions": comp,
+            "corrections": [row[2] for row in scored if plausible_correction(query, row[2])][:limit]}
 
 
 def _query_plan(query: str) -> dict:

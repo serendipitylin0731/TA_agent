@@ -31,6 +31,7 @@ def test_acid_base_question_keeps_both_concepts_and_finds_neutralization(monkeyp
         '酸与碱作用生成盐和水的反应，叫做中和反应。例如氢氧化钠与盐酸反应生成氯化钠和水。')])
     assert '中和反应' in db.query_variants('酸和碱反应')
     assert not db.plausible_correction('酸和碱反应', '碱反应')
+    assert '碱反应' not in db.suggest('酸和碱反应')['corrections']
     results = db.search_expanded('酸和碱反应')
     assert results[0]['source_id'] == source_id
     assert results[0]['page'] == 80
