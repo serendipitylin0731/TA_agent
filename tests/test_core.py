@@ -1,3 +1,5 @@
+import hashlib
+
 from fastapi.testclient import TestClient
 import pymupdf
 
@@ -11,6 +13,27 @@ def textbook_meta(subject='数学', catalog='初中-数学'):
             'subject': subject, 'edition': '人教版', 'publisher': '人民教育出版社',
             'volume': '八年级下册', 'url': '', 'license': '本地研究', 'file_path': '',
             'catalog_id': catalog}
+
+
+def test_existing_catalog_is_not_rewritten_on_startup(monkeypatch, tmp_path):
+    monkeypatch.setenv('TA_DATA_DIR', str(tmp_path))
+    db.init_db()
+    before = hashlib.sha256((tmp_path / 'ta.db').read_bytes()).digest()
+    db.init_db()
+    after = hashlib.sha256((tmp_path / 'ta.db').read_bytes()).digest()
+    assert after == before
+
+
+def test_acid_base_question_keeps_both_concepts_and_finds_neutralization(monkeypatch, tmp_path):
+    monkeypatch.setenv('TA_DATA_DIR', str(tmp_path))
+    db.init_db()
+    source_id = db.add_source(textbook_meta('化学', '初中-化学'), [(80, '中和反应',
+        '酸与碱作用生成盐和水的反应，叫做中和反应。例如氢氧化钠与盐酸反应生成氯化钠和水。')])
+    assert '中和反应' in db.query_variants('酸和碱反应')
+    assert not db.plausible_correction('酸和碱反应', '碱反应')
+    results = db.search_expanded('酸和碱反应')
+    assert results[0]['source_id'] == source_id
+    assert results[0]['page'] == 80
 
 
 def test_textbook_search_and_read_only_api(monkeypatch, tmp_path):
@@ -181,6 +204,19 @@ def test_answer_evidence_restores_all_passages_on_hit_page(monkeypatch, tmp_path
     assert '①有穷性' in evidence['text']
     assert '⑤算法必须有输出' in evidence['text']
     assert evidence['page'] == 49
+
+
+def test_shared_index_resolves_textbook_file_in_new_checkout(monkeypatch, tmp_path):
+    monkeypatch.setenv('TA_DATA_DIR', str(tmp_path))
+    db.init_db()
+    uploads = tmp_path / 'uploads'
+    uploads.mkdir()
+    local_file = uploads / 'textbook.pdf'
+    local_file.write_bytes(b'%PDF-1.4\n')
+    source_id = db.add_source(textbook_meta() | {
+        'file_path': '/another/computer/storage/uploads/textbook.pdf',
+    }, [(1, '', '函数')])
+    assert db.get_source(source_id)['file_path'] == str(local_file)
 
 
 def test_markdown_preserves_pdf_page_and_section(tmp_path):

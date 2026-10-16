@@ -100,12 +100,11 @@ def main():
     total = sum(map(len, QUESTIONS.values()))
     for subject, questions in QUESTIONS.items():
         for question in questions:
-            results = [item for item in db.search(question, limit=15) if item["relevance"] == "strong"]
+            results = db.search_expanded(question, limit=15)
             top = results[0] if results else None
             stats["strong"] += bool(top)
             stats["subject"] += bool(top and top["subject"] == subject)
-            scoped = [item for item in db.search(question, subject=subject, limit=15)
-                      if item["relevance"] == "strong"]
+            scoped = db.search_expanded(question, subject=subject, limit=15)
             stats["scoped"] += bool(scoped)
             gold = GOLD.get(question)
             if gold:

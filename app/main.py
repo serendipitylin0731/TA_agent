@@ -73,15 +73,13 @@ def source_content(source_id: int):
 
 @app.post("/api/search")
 def search(request: SearchRequest):
-    results = [item for item in db.search(request.query, request.stage, request.subject, request.limit * 12)
-               if item["relevance"] == "strong"]
+    results = db.search_expanded(request.query, request.stage, request.subject, request.limit * 12)
     proposals = db.suggest(request.query, request.stage, request.subject)
     corrected_query = ""
     if not results and proposals["corrections"]:
         candidate = proposals["corrections"][0]
-        if candidate != request.query:
-            results = [item for item in db.search(candidate, request.stage, request.subject, request.limit * 12)
-                       if item["relevance"] == "strong"]
+        if candidate != request.query and db.plausible_correction(request.query, candidate):
+            results = db.search_expanded(candidate, request.stage, request.subject, request.limit * 12)
             if results:
                 corrected_query = candidate
     if not results:
@@ -89,8 +87,9 @@ def search(request: SearchRequest):
         term_suggestions = db.suggest(plan["core"], request.stage, request.subject)["corrections"]
         for term in term_suggestions[:3]:
             candidate = term + ("的" + plan["facet"] if plan["facet"] else "")
-            results = [item for item in db.search(candidate, request.stage, request.subject, request.limit * 12)
-                       if item["relevance"] == "strong"]
+            if not db.plausible_correction(request.query, candidate):
+                continue
+            results = db.search_expanded(candidate, request.stage, request.subject, request.limit * 12)
             if results:
                 corrected_query = candidate
                 proposals["corrections"] = list(dict.fromkeys([candidate] + proposals["corrections"]))[:6]
@@ -112,12 +111,12 @@ def suggestions(q: str = Query(min_length=2, max_length=60), stage: str = "", su
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
     broad = bool(re.search(r"发展|演变|历程|变化|沿革", request.query))
-    candidates = db.search(request.query, request.stage, request.subject, 90) if request.mode == "grounded" else []
+    candidates = db.search_expanded(request.query, request.stage, request.subject, 90) if request.mode == "grounded" else []
     if broad:
         topic = db._query_plan(request.query)["core"]
         topic = re.sub(r"^(中国古代|中国近代|我国古代|我国)", "", topic)
         if len(topic) >= 2:
-            more = db.search(topic, request.stage, request.subject, 90)
+            more = db.search_expanded(topic, request.stage, request.subject, 90)
             candidates = list({(item["source_id"], item["page"]): item for item in candidates + more}.values())
             candidates.sort(key=lambda item: -item["score"])
     matches = [item for item in candidates if item["relevance"] == "strong"]
@@ -149,7 +148,7 @@ async def chat(request: ChatRequest):
                            for term in db.suggest(plan["core"], request.stage, request.subject)["corrections"]]
         if corrections:
             candidate = corrections[0]
-            matches = [item for item in db.search(candidate, request.stage, request.subject, 6) if item["relevance"] == "strong"]
+            matches = db.search_expanded(candidate, request.stage, request.subject, 6) if db.plausible_correction(request.query, candidate) else []
             if matches:
                 interpreted_query = candidate
             else:

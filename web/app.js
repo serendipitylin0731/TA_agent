@@ -47,7 +47,7 @@ const titleMap = {chat:['Chat 问答','教材优先，给出清楚直接的回�
 function render() {
   if(state.view==='reader' && state.reader){app.innerHTML=readerView();bind();return}
   const title=titleMap[state.view];
-  app.innerHTML=`<div class="shell">
+  app.innerHTML=`<div class="shell ${state.view==='chat'?'chat-shell':''} ${state.view==='chat'&&(state.messages.length||state.busy)?'chat-active':''}">
     <aside class="sidebar"><div class="brand"><div class="brand-icon"><img src="/logo.svg" alt=""></div><div><strong>知页 <em>TA</em></strong><small>TEACHING ATLAS AGENT</small></div></div>
       <div class="nav-label">工作空间</div><nav aria-label="主导航">
         ${[['chat','spark','Chat 问答'],['search','search','查询原文'],['catalog','book','阅读教材']].map(([key,ic,label])=>`<button class="nav-item ${state.view===key?'active':''}" data-view="${key}">${icon(ic,18)}<span>${label}</span></button>`).join('')}
@@ -58,6 +58,7 @@ function render() {
       <footer class="footer"><span>知页 TA Agent · 教学研究原型</span><span>回答可能有误，请以原始资料与教师核验为准</span></footer></div>
     </main>${state.notice?`<div class="toast" role="status">${esc(state.notice)}</div>`:''}</div>`;
   bind();
+  if(state.view==='chat')window.scrollTo(0,0);
   if(window.renderMathInElement)document.querySelectorAll('.message-bubble').forEach(el=>window.renderMathInElement(el,{delimiters:[{left:'$$',right:'$$',display:true},{left:'\\[',right:'\\]',display:true},{left:'\\(',right:'\\)',display:false}],throwOnError:false}));
   if(state.view==='chat'&&state.messages.length)requestAnimationFrame(()=>{const body=document.getElementById('chatBody');if(body)body.scrollTop=body.scrollHeight});
 }

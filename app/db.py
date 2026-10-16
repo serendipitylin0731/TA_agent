@@ -67,9 +67,13 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_search_terms_term ON search_terms(term);
         """)
-        db.executemany("""INSERT OR REPLACE INTO catalog
-          (id,stage,subject,edition,publisher,title,catalog_url,note)
-          VALUES (:id,:stage,:subject,:edition,:publisher,:title,:catalog_url,:note)""", catalog_entries())
+        catalog_columns = ("id", "stage", "subject", "edition", "publisher", "title", "catalog_url", "note")
+        for entry in catalog_entries():
+            current = db.execute("SELECT * FROM catalog WHERE id=?", (entry["id"],)).fetchone()
+            if current is None or any(current[column] != entry[column] for column in catalog_columns):
+                db.execute("""INSERT OR REPLACE INTO catalog
+                  (id,stage,subject,edition,publisher,title,catalog_url,note)
+                  VALUES (:id,:stage,:subject,:edition,:publisher,:title,:catalog_url,:note)""", entry)
         # Older installations may still contain imported web pages. Remove their
         # search rows as well as their source records during the schema upgrade.
         obsolete = [row["id"] for row in db.execute("SELECT id FROM sources WHERE kind!='textbook'")]
@@ -177,7 +181,19 @@ def list_sources():
 def get_source(source_id: int):
     with connect() as db:
         row = db.execute("SELECT * FROM sources WHERE id=? AND kind='textbook'", (source_id,)).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        source = dict(row)
+        if source["file_path"]:
+            recorded = Path(source["file_path"])
+            # Existing indexes contain absolute paths from the importing machine.
+            # Prefer the uploaded file in this checkout when the DB is shared.
+            candidate = data_dir() / "uploads" / recorded.name
+            if candidate.is_file():
+                source["file_path"] = str(candidate)
+            elif not recorded.is_absolute():
+                source["file_path"] = str(recorded.resolve())
+        return source
 
 
 def get_source_text(source_id: int) -> str:
@@ -291,6 +307,35 @@ def _query_plan(query: str) -> dict:
     return {"core": core, "facet": normalize_search(facet), "phrase": phrase,
             "tokens": tokens[:6], "definition": bool("定义" in facet or asks_definition and not facet),
             "list": asks_list, "quoted_title": quoted_title, "strict_ordinal": facet == "第二定义", "numeric": "是多少" in query}
+
+
+def query_variants(query: str) -> list[str]:
+    """Search equivalent textbook wording without dropping the question's topic."""
+    core = _query_plan(query)["core"]
+    variants = [query]
+    if len(core) >= 4 and core != normalize_search(query):
+        variants.append(core)
+    shortened = re.sub(r"(?:时|后)?(?:会)?(?:怎么样|怎样|如何|会发生什么|有什么现象)$", "", core)
+    if len(shortened) >= 4 and shortened != core:
+        variants.append(shortened)
+    # The everyday wording of a reaction is often different from its textbook term.
+    if "酸" in core and "碱" in core and "反应" in core:
+        variants.extend(("酸与碱作用生成盐和水", "中和反应", "酸与碱作用", "酸碱中和反应"))
+    elif not re.search(r"和|与|及|区别|比较", core):
+        compact = re.sub(r"中的|如何|怎样|怎么|的", "", shortened)
+        if 4 <= len(compact) <= 14 and compact != shortened:
+            variants.append(compact)
+    return list(dict.fromkeys(variant for variant in variants if len(normalize_search(variant)) >= 2))[:8]
+
+
+def plausible_correction(query: str, candidate: str) -> bool:
+    """Reject suggestions that erase a meaningful part of the user's topic."""
+    original = _query_plan(query)["core"]
+    proposed = _query_plan(candidate)["core"]
+    if not original or not proposed or abs(len(original) - len(proposed)) > 1:
+        return False
+    ratio = SequenceMatcher(None, original, proposed, autojunk=False).ratio()
+    return ratio >= (0.5 if len(original) <= 3 else 0.68)
 
 
 def _compact_with_offsets(value: str) -> tuple[str, str, list[int]]:
@@ -472,6 +517,23 @@ def search(query: str, stage: str = "", subject: str = "", limit: int = 8, group
             grouped.append(item)
             seen.add(key)
     return grouped[:limit]
+
+
+def search_expanded(query: str, stage: str = "", subject: str = "", limit: int = 8) -> list[dict]:
+    """Merge strong page matches from several faithful phrasings of one question."""
+    matches = {}
+    votes = {}
+    for variant in query_variants(query):
+        for item in search(variant, stage, subject, max(30, limit)):
+            if item["relevance"] != "strong":
+                continue
+            key = (item["source_id"], item["page"])
+            votes.setdefault(key, set()).add(variant)
+            if key not in matches or item["score"] > matches[key]["score"]:
+                matches[key] = item
+    for key, item in matches.items():
+        item["score"] = round(item["score"] + min(6, 2 * (len(votes[key]) - 1)), 2)
+    return sorted(matches.values(), key=lambda item: (-item["score"], item["source_id"], item["page"] or 0))[:limit]
 
 
 def get_chunks(ids: list[int]) -> list[dict]:

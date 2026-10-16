@@ -6,3 +6,4 @@ storage/uploads/
 storage/ta.db*
 storage/covers/
 storage/markdown/
+storage/markdown.tar.zst
