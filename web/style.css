@@ -26,7 +26,9 @@
 .catalog-subject{background:#fff;border:1px solid #e5ece8;border-radius:13px;padding:25px}
 .catalog-subject h2{margin:12px 0 5px;color:#294a4d;font-size:25px}
 .catalog-subject p{font-size:12px;color:#8ba2a0;margin:0 0 25px}
-.catalog-back{border:0;background:none;color:#3b8460;display:flex;align-items:center;gap:7px;padding:0 0 18px;font-size:12px;font-weight:700}
+.catalog-back{display:flex;width:max-content;align-items:center;justify-content:center;gap:9px;min-height:42px;margin:0 0 22px;padding:10px 16px;border:1px solid #216b4e;border-radius:9px;background:#247453;color:#fff;font-size:14px;font-weight:700;box-shadow:0 4px 12px #1c674522;transition:background .15s,box-shadow .15s,transform .15s}
+.catalog-back:hover{background:#185c41;box-shadow:0 6px 16px #1c674533;transform:translateY(-1px)}
+.catalog-back:focus-visible{outline:3px solid #8bc7a0;outline-offset:3px}
 .catalog-back svg{transform:rotate(180deg)}
 .book-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .book-grid .book-item{min-height:76px}
