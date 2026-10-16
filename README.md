@@ -52,4 +52,4 @@ PYTHONPATH=. python scripts/evaluate_answers.py  # 需要配置模型 API，抽�
 
 检索评估覆盖 39 个基础问题和 138 个扩展问题，还检查指定页、无教材证据和错别字建议。真实回答脚本覆盖 14 个跨学科及未命中案例。`web/vendor/pdfjs/` 为本地 PDF.js 分发文件，许可证见其 `LICENSE`。
 
-更多信息见[系统架构](docs/architecture.md)、[演示脚本](docs/demo.md)、[验证记录](docs/evaluation.md)和[教材覆盖快照](docs/coverage.md)。
+更多信息见[系统架构](docs/architecture.md)、[验证记录](docs/evaluation.md)和[教材覆盖快照](docs/coverage.md)。
