@@ -6,16 +6,29 @@ const EXAMPLES = [
   '电流、电压和电阻有什么关系？','酸和碱发生中和反应时会怎样？','中国古代科举制度怎样发展？',
   '近代中国社会发生了哪些变化？','地形对气候有什么影响？','如何理解依法治国？',
   '《济南的冬天》描写了哪些景物？','英语一般过去时怎样使用？','算法和程序有什么区别？',
-  '通用技术中什么是设计的基本原则？','生态系统中的能量如何流动？','为什么会形成季风？'
+  '设计的一般原则有哪些？','生态系统中的能量如何流动？','为什么会形成季风？',
+  '椭圆的第二定义是什么？','欧姆定律如何应用于串联电路？','地球自转会带来哪些现象？',
+  '《背影》的作者是谁？','辛亥革命有什么历史意义？','减数分裂的主要阶段有哪些？',
+  '酸碱中和反应生成什么？','秦朝统一采取了哪些措施？','水循环有哪些主要环节？',
+  '算法有哪些基本特征？','设计时如何兼顾实用与可持续发展？','英语现在完成时与一般过去时有何区别？'
 ];
-const sampleExamples = () => {
-  const pool=[...EXAMPLES];
+const sampleExamples = (previous=[]) => {
+  const pool=EXAMPLES.filter(question=>!previous.includes(question));
   for(let i=pool.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[pool[i],pool[j]]=[pool[j],pool[i]]}
   return pool.slice(0,4);
 };
 const readHistory = key => {try {const value=JSON.parse(localStorage.getItem(key)||'[]');return Array.isArray(value)?value.slice(-10):[]} catch {return []}};
-const state = {view:'chat',stage:'',subject:'',searchQuery:'',searchResults:[],searchSuggestions:{completions:[],corrections:[]},searchCorrected:'',catalog:[],sources:[],status:null,messages:readHistory('ta-chat-v2').flatMap(item=>item.messages||[]),searchHistory:readHistory('ta-search-v2'),busy:false,notice:'',reader:null,readerReturn:null,catalogSelection:null,examples:sampleExamples()};
+const newId = () => crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+const oldChatMessages=readHistory('ta-chat-v2').flatMap(item=>item.messages||[]);
+const savedChatSessions=readHistory('ta-chat-sessions-v1');
+const savedSearchSessions=readHistory('ta-search-sessions-v1');
+const state = {view:'chat',stage:'',subject:'',searchQuery:'',searchResults:[],searchSuggestions:{completions:[],corrections:[]},searchCorrected:'',catalog:[],sources:[],status:null,messages:[],chatSessions:savedChatSessions.length?savedChatSessions:oldChatMessages.length?[{id:newId(),title:oldChatMessages[0]?.content?.slice(0,26)||'此前对话',messages:oldChatMessages,stage:'',subject:'',updatedAt:Date.now()}]:[],searchSessions:savedSearchSessions.length?savedSearchSessions:readHistory('ta-search-v2').map(item=>({id:newId(),title:item.query,query:item.query,stage:item.stage,subject:item.subject,results:[],corrected:'',updatedAt:Date.now()})),activeChatId:null,activeSearchId:null,busy:false,notice:'',reader:null,readerReturn:null,catalogSelection:null,examples:sampleExamples()};
 const saveHistory = (key,items) => {try {localStorage.setItem(key,JSON.stringify(items.slice(-10)))} catch {}};
+const saveSessions = () => {saveHistory('ta-chat-sessions-v1',state.chatSessions);saveHistory('ta-search-sessions-v1',state.searchSessions)};
+function newChat(){state.view='chat';state.activeChatId=null;state.messages=[];state.stage='';state.subject='';state.examples=sampleExamples(state.examples);state.notice='';render()}
+function newSearch(){state.view='search';state.activeSearchId=null;state.searchQuery='';state.searchResults=[];state.searchCorrected='';state.searchSuggestions={completions:[],corrections:[]};state.stage='';state.subject='';state.notice='';render()}
+function openChatSession(id){const session=state.chatSessions.find(item=>item.id===id);if(!session)return;state.view='chat';state.activeChatId=id;state.messages=[...session.messages];state.stage=session.stage||'';state.subject=session.subject||'';render()}
+function openSearchSession(id){const session=state.searchSessions.find(item=>item.id===id);if(!session)return;state.view='search';state.activeSearchId=id;state.searchQuery=session.query;state.searchResults=session.results||[];state.searchCorrected=session.corrected||'';state.stage=session.stage||'';state.subject=session.subject||'';render()}
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const api = async (path, options={}) => {
@@ -38,7 +51,7 @@ function render() {
     <aside class="sidebar"><div class="brand"><div class="brand-icon"><img src="/logo.svg" alt=""></div><div><strong>知页 <em>TA</em></strong><small>TEACHING ATLAS AGENT</small></div></div>
       <div class="nav-label">工作空间</div><nav aria-label="主导航">
         ${[['chat','spark','Chat 问答'],['search','search','查询原文'],['catalog','book','阅读教材']].map(([key,ic,label])=>`<button class="nav-item ${state.view===key?'active':''}" data-view="${key}">${icon(ic,18)}<span>${label}</span></button>`).join('')}
-      </nav><div class="sidebar-grow"></div><a class="sidebar-card" href="/about.html"><span class="orb">${icon('shield',18)}</span><strong>有据可查，才值得相信</strong><p>了解设计初衷、功能与教材覆盖 →</p></a><a class="sidebar-foot" href="mailto:serendipity_lin@sjtu.edu.cn">有问题请联系<br>serendipity_lin@sjtu.edu.cn</a></aside>
+      </nav><button class="history-toggle" data-toggle-history aria-label="查看最近记录">${icon('clock',19)}</button><div class="sidebar-history-scroll"><div class="sidebar-history-head"><span>最近对话</span><button data-new-chat aria-label="新建聊天">${icon('plus',14)}</button></div><div class="sidebar-history-items">${[...state.chatSessions].reverse().slice(0,10).map(item=>`<button class="sidebar-history-item ${state.activeChatId===item.id&&state.view==='chat'?'selected':''}" data-chat-session="${esc(item.id)}" title="${esc(item.title)}">${icon('clock',14)}<span>${esc(item.title)}</span></button>`).join('')||'<small>暂无对话</small>'}</div><div class="sidebar-history-head"><span>最近检索</span><button data-new-search aria-label="新建检索">${icon('plus',14)}</button></div><div class="sidebar-history-items">${[...state.searchSessions].reverse().slice(0,10).map(item=>`<button class="sidebar-history-item ${state.activeSearchId===item.id&&state.view==='search'?'selected':''}" data-search-session="${esc(item.id)}" title="${esc(item.title)}">${icon('search',14)}<span>${esc(item.title)}</span></button>`).join('')||'<small>暂无检索</small>'}</div></div><div class="sidebar-grow"></div><a class="sidebar-card" href="/about.html"><span class="orb">${icon('shield',18)}</span><strong>有据可查，才值得相信</strong><p>了解设计初衷、功能与教材覆盖 →</p></a><a class="sidebar-foot" href="mailto:serendipity_lin@sjtu.edu.cn">有问题请联系<br>serendipity_lin@sjtu.edu.cn</a></aside>
     <main class="main"><header class="topbar"><span>教学知识工作台 <b>/</b> ${title[0]}</span><div class="top-status"><span class="tiny-dot"></span>${state.status?.deepseek_configured?'AI 问答已就绪':'AI 问答待配置'}</div></header>
       <div class="page"><div class="heading"><div><div class="eyebrow"><span></span> EVIDENCE FIRST LEARNING <span></span></div><h1>${title[0]}<i>.</i></h1><p>${title[1]}</p></div></div>
       ${state.view==='chat'?chatView():state.view==='search'?searchView():catalogView()}
@@ -67,9 +80,9 @@ function chatView() {
   const empty=state.messages.length===0;
   return `<div class="workspace-grid"><section class="chat-panel panel"><div class="panel-heading"><div><span class="section-kicker">ASK WITH EVIDENCE</span><h2>和教材一起思考</h2></div><span class="subtle-label">${icon('shield',15)} 来源可追溯</span></div>
     <div class="chat-filters"><span>回答范围</span>${filters()}</div>
-    <div class="chat-body" id="chatBody">${empty?`<div class="chat-empty"><div class="empty-symbol">✳</div><span>你的教学研究伙伴</span><h3>提问，从一个知识点开始</h3><p>可以问概念、比较观点、寻找出处，或让助手<br>根据教材梳理讲解思路。</p><div class="suggestions">${state.examples.map(q=>`<button data-prompt="${esc(q)}">${esc(q)} ${icon('arrow',14)}</button>`).join('')}</div></div>`:state.messages.map((message,index)=>messageHTML(message,index)).join('')}${state.busy?'<div class="typing"><i></i><i></i><i></i> 正在检索教材并整理回答</div>':''}</div>
-    <form id="chatForm" class="composer"><textarea id="chatInput" rows="2" maxlength="1500" placeholder="输入你的教学问题…" aria-label="教学问题"></textarea><div class="composer-bottom"><span>Enter 发送 · Shift + Enter 换行</span><button type="submit" ${state.busy?'disabled':''}>发送 ${icon('send',17)}</button></div></form>
-  </section>${state.messages.length?`<div class="recent-note">本机保存最近 10 条对话，刷新页面后可继续查看。</div>`:''}</div>`;
+    <div class="chat-body" id="chatBody">${empty?`<div class="chat-empty"><div class="empty-symbol">✳</div><span>你的教学研究伙伴</span><h3>提问，从一个知识点开始</h3><p>可询问语数英、理化生、政史地和技术教材中的问题。</p><div class="suggestions">${state.examples.map(q=>`<button data-prompt="${esc(q)}">${esc(q)} ${icon('arrow',14)}</button>`).join('')}</div><button class="refresh-examples" data-refresh-examples>${icon('arrow',14)} 换一批问题</button></div>`:state.messages.map((message,index)=>messageHTML(message,index)).join('')}${state.busy?'<div class="typing"><i></i><i></i><i></i> 正在检索教材并整理回答</div>':''}</div>
+    <form id="chatForm" class="composer"><textarea id="chatInput" rows="2" maxlength="1500" placeholder="向所有学科提问…" aria-label="教学问题"></textarea><div class="composer-bottom"><span>Enter 发送 · Shift + Enter 换行</span><button type="submit" ${state.busy?'disabled':''}>发送 ${icon('send',17)}</button></div></form>
+  </section></div>`;
 }
 function messageHTML(message,index) {
   const isUser=message.role==='user';
@@ -78,13 +91,12 @@ function messageHTML(message,index) {
   if(!isUser&&window.katex)body=body.replace(/\\\[([\s\S]*?)\\\]/g,(_,math)=>`<div class="math-block">${window.katex.renderToString(math.replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&'),{displayMode:true,throwOnError:false})}</div>`);
   body=body.replace(/\n/g,'<br>');
   if(!isUser) body=body.replace(/\[(\d+)\]/g,(_,n)=>message.citations?.some(c=>c.number===Number(n))?`<button class="cite" data-cite="${n}" data-message="${index}">[${n}]</button>`:`[${n}]`);
-  return `<div class="message ${isUser?'user':'assistant'}"><div class="avatar">${isUser?icon('user',19):'<img src="/teacher.svg" alt="老师">'}</div><div class="message-main"><span class="message-name">${isUser?'你':'知页助手'}</span><div class="message-bubble">${body}</div>${!isUser&&message.notice?`<div class="answer-notice">${icon('shield',14)} ${esc(message.notice)}</div>`:''}${!isUser&&message.citations?.length?`<div class="reference-title">参考教材与定位</div><div class="message-citations">${message.citations.map(c=>`<button data-cite="${c.number}" data-message="${index}"><strong>[${c.number}] ${esc(c.title)}</strong><small>${esc([c.stage,c.subject,c.edition,c.volume].filter(Boolean).join(' · '))} · ${c.page?'PDF 第 '+c.page+' 页':'教材正文'}</small>${icon('arrow',12)}</button>`).join('')}</div>`:''}</div></div>`;
+  return `<div class="message ${isUser?'user':'assistant'}"><div class="avatar">${isUser?icon('user',19):'<img src="/teacher.svg" alt="老师">'}</div><div class="message-main"><span class="message-name">${isUser?'你':'知页助手'}</span><div class="message-bubble">${body}</div>${!isUser&&message.notice?`<div class="answer-notice">${icon('shield',14)} ${esc(message.notice)}</div>`:''}${!isUser&&message.citations?.length?`<div class="reference-title">参考教材与定位</div><div class="message-citations">${message.citations.map(c=>`<button data-cite="${c.number}" data-message="${index}"><strong>[${c.number}] ${esc(c.title)}</strong><small>${esc([c.stage,c.subject,c.edition,c.volume,c.section?.replace(/^§\s*/,''),c.page?'PDF 第 '+c.page+' 页':'教材正文'].filter(Boolean).join(' · '))}</small>${icon('arrow',12)}</button>`).join('')}</div>`:''}</div></div>`;
 }
 function searchView() {
   return `<div class="search-layout"><section class="search-main"><div class="search-hero"><div class="section-kicker">TEXTBOOK SEARCH</div><h2>找到知识，也找到教材页码</h2><p>支持关键词、模糊检索与错别字建议；结果均来自已接入的教材。</p><form id="searchForm"><div class="search-box">${icon('search',21)}<input id="searchInput" value="${esc(state.searchQuery)}" placeholder="试试搜索：光合作用 / 函数 / 近代中国…" autocomplete="off"/><button type="submit">开始检索 ${icon('arrow',16)}</button></div><div class="search-suggestions" id="searchSuggestions">${suggestionHTML()}</div></form></div>
     <div class="search-controls">${filters()}</div>
     <div class="results-heading"><span>${state.searchCorrected?`未找到“${esc(state.searchQuery)}”，按“${esc(state.searchCorrected)}”显示结果`:state.searchQuery?`“${esc(state.searchQuery)}” 的结果`:'开始一次检索'}</span><small>${state.searchResults.length} 条结果</small></div>
-    ${state.searchHistory.length?`<div class="search-history"><strong>最近检索</strong>${[...state.searchHistory].reverse().map((item,index)=>`<button data-history-index="${index}">${esc(item.query)}</button>`).join('')}</div>`:''}
     ${state.searchResults.length?`<div class="result-list">${state.searchResults.map(resultCard).join('')}</div>`:emptyResults()}
   </section></div>`;
 }
@@ -137,7 +149,13 @@ function closeReader(){
 }
 
 function bind(){
-  document.querySelectorAll('[data-view]').forEach(el=>el.onclick=()=>{state.view=el.dataset.view;if(state.view==='chat'&&!state.messages.length)state.examples=sampleExamples();state.notice='';render()});
+  document.querySelectorAll('[data-view]').forEach(el=>el.onclick=()=>{if(el.dataset.view==='chat')newChat();else if(el.dataset.view==='search')newSearch();else{state.view='catalog';state.notice='';render()}});
+  document.querySelectorAll('[data-new-chat]').forEach(el=>el.onclick=newChat);
+  document.querySelectorAll('[data-new-search]').forEach(el=>el.onclick=newSearch);
+  document.querySelectorAll('[data-toggle-history]').forEach(el=>el.onclick=()=>document.querySelector('.sidebar')?.classList.toggle('history-open'));
+  document.querySelectorAll('[data-chat-session]').forEach(el=>el.onclick=()=>openChatSession(el.dataset.chatSession));
+  document.querySelectorAll('[data-search-session]').forEach(el=>el.onclick=()=>openSearchSession(el.dataset.searchSession));
+  document.querySelectorAll('[data-refresh-examples]').forEach(el=>el.onclick=()=>{state.examples=sampleExamples(state.examples);render()});
   document.querySelectorAll('[data-prompt]').forEach(el=>el.onclick=()=>sendChat(el.dataset.prompt));
   document.querySelectorAll('[data-open-result]').forEach(el=>el.onclick=()=>{const item=state.searchResults[Number(el.dataset.openResult)];openReader(item.source_id,item.page,'search',state.searchCorrected||state.searchQuery)});
   document.querySelectorAll('[data-read-book]').forEach(el=>el.onclick=()=>openReader(Number(el.dataset.readBook),1,'catalog'));
@@ -145,7 +163,6 @@ function bind(){
   document.querySelectorAll('[data-open-subject]').forEach(el=>el.onclick=()=>{state.catalogSelection=el.dataset.openSubject;render();window.scrollTo(0,0)});
   document.querySelectorAll('[data-close-subject]').forEach(el=>el.onclick=()=>{state.catalogSelection=null;render()});
   document.querySelectorAll('[data-cite]').forEach(el=>el.onclick=()=>{const index=Number(el.dataset.message);const citation=state.messages[index]?.citations?.find(x=>x.number===Number(el.dataset.cite));const question=[...state.messages.slice(0,index)].reverse().find(x=>x.role==='user')?.content||'';if(citation)openReader(citation.source_id,citation.page,'chat',question)});
-  document.querySelectorAll('[data-history-index]').forEach(el=>el.onclick=()=>{const item=[...state.searchHistory].reverse()[Number(el.dataset.historyIndex)];state.stage=item.stage;state.subject=item.subject;runSearch(item.query)});
   document.getElementById('stageFilter')?.addEventListener('change',event=>{state.stage=event.target.value;render()});
   document.getElementById('subjectFilter')?.addEventListener('change',event=>{state.subject=event.target.value;render()});
   const chatForm=document.getElementById('chatForm');if(chatForm){chatForm.onsubmit=e=>{e.preventDefault();sendChat(document.getElementById('chatInput').value)};document.getElementById('chatInput').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();chatForm.requestSubmit()}}}
@@ -155,7 +172,39 @@ function bind(){
 let suggestionTimer=0,suggestionSeq=0;
 function bindSuggestionButtons(){document.querySelectorAll('[data-suggest-value]').forEach(el=>el.onclick=()=>runSearch(el.dataset.suggestValue))}
 function queueSuggestions(query){clearTimeout(suggestionTimer);const seq=++suggestionSeq;const box=document.getElementById('searchSuggestions');if(query.trim().length<2){state.searchSuggestions={completions:[],corrections:[]};if(box)box.innerHTML='';return}suggestionTimer=setTimeout(async()=>{try{const data=await api('/api/suggest?q='+encodeURIComponent(query)+'&stage='+encodeURIComponent(state.stage)+'&subject='+encodeURIComponent(state.subject));if(seq!==suggestionSeq)return;state.searchSuggestions=data;if(box){box.innerHTML=suggestionHTML();bindSuggestionButtons()}}catch{}},220)}
-async function runSearch(query){query=query.trim();if(query.length<2)return notice('请输入至少两个字的关键词');clearTimeout(suggestionTimer);suggestionSeq++;state.searchQuery=query;state.searchCorrected='';state.searchSuggestions={completions:[],corrections:[]};state.busy=true;render();try{const data=await post('/api/search',{query,stage:state.stage,subject:state.subject,limit:16});state.searchResults=data.results;state.searchCorrected=data.corrected_query||'';state.searchSuggestions=data.suggestions||state.searchSuggestions;state.searchHistory=[...state.searchHistory.filter(x=>x.query!==query),{query,stage:state.stage,subject:state.subject}].slice(-10);saveHistory('ta-search-v2',state.searchHistory)}catch(error){notice(error.message)}finally{state.busy=false;render()}}
-async function sendChat(query){query=query.trim();if(query.length<2||state.busy)return;const history=state.messages.map(x=>({role:x.role,content:x.content})).slice(-6);state.messages.push({role:'user',content:query});state.busy=true;render();const body=document.getElementById('chatBody');body?.scrollTo({top:body.scrollHeight});try{const data=await post('/api/chat',{query,mode:'grounded',stage:state.stage,subject:state.subject,history});state.messages.push({role:'assistant',content:data.answer,citations:data.citations,mode:data.mode,notice:data.evidence_status==='not_found'?'教材库未检索到合适内容；以下回答由模型生成，请核对。':''})}catch(error){state.messages.push({role:'assistant',content:error.message,citations:[],mode:'error'})}finally{state.busy=false;const exchanges=[];for(let i=0;i<state.messages.length-1;i++)if(state.messages[i].role==='user'&&state.messages[i+1].role==='assistant')exchanges.push({messages:[state.messages[i],state.messages[i+1]]});saveHistory('ta-chat-v2',exchanges);render()}}
+async function runSearch(query){
+  query=query.trim();if(query.length<2)return notice('请输入至少两个字的关键词');
+  clearTimeout(suggestionTimer);suggestionSeq++;
+  const id=newId(),stage=state.stage,subject=state.subject;
+  const session={id,title:query.slice(0,28),query,stage,subject,results:[],corrected:'',updatedAt:Date.now()};
+  state.searchSessions=[...state.searchSessions,session].slice(-10);state.activeSearchId=id;
+  state.searchQuery=query;state.searchResults=[];state.searchCorrected='';state.searchSuggestions={completions:[],corrections:[]};state.busy=true;saveSessions();render();
+  try{
+    const data=await post('/api/search',{query,stage,subject,limit:16});
+    session.results=data.results;session.corrected=data.corrected_query||'';saveSessions();
+    if(state.activeSearchId===id){state.searchResults=data.results;state.searchCorrected=session.corrected;state.searchSuggestions=data.suggestions||state.searchSuggestions}
+  }catch(error){notice(error.message)}finally{state.busy=false;render()}
+}
+async function sendChat(query){
+  query=query.trim();if(query.length<2||state.busy)return;
+  const history=state.messages.map(x=>({role:x.role,content:x.content})).slice(-6);
+  const id=state.activeChatId||newId();
+  let session=state.chatSessions.find(item=>item.id===id);
+  if(!session){session={id,title:query.slice(0,28),messages:[],stage:state.stage,subject:state.subject,updatedAt:Date.now()};state.chatSessions=[...state.chatSessions,session].slice(-10)}
+  const stage=state.stage,subject=state.subject;
+  session.stage=stage;session.subject=subject;
+  const conversation=[...state.messages,{role:'user',content:query}];
+  state.activeChatId=id;state.messages=conversation;session.messages=conversation;session.updatedAt=Date.now();saveSessions();state.busy=true;render();
+  try{
+    const data=await post('/api/chat',{query,mode:'grounded',stage,subject,history});
+    conversation.push({role:'assistant',content:data.answer,citations:data.citations,mode:data.mode,notice:data.evidence_status==='not_found'?'教材库未检索到合适内容；以下回答由模型生成，请核对。':data.interpreted_query?`已按“${data.interpreted_query}”检索教材。`:''});
+  }catch(error){conversation.push({role:'assistant',content:error.message,citations:[],mode:'error'})}
+  finally{
+    session.messages=conversation;session.updatedAt=Date.now();
+    state.chatSessions=[...state.chatSessions.filter(item=>item.id!==id),session].slice(-10);
+    if(state.activeChatId===id)state.messages=conversation;
+    saveSessions();state.busy=false;render();
+  }
+}
 
 refresh().catch(error=>{app.innerHTML=`<div class="fatal">知识库暂时无法启动：${esc(error.message)}</div>`});

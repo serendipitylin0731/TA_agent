@@ -5,3 +5,4 @@ __pycache__/
 storage/uploads/
 storage/ta.db*
 storage/covers/
+storage/markdown/

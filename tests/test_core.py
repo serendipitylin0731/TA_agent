@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 import pymupdf
 
 from app import db
+from app.markdown_ingest import convert_book, update_section
 from app.main import app
 
 
@@ -46,6 +47,24 @@ def test_chat_falls_back_to_model_with_separate_status(monkeypatch, tmp_path):
     assert data['citations'] == []
     assert data['evidence_status'] == 'not_found'
     assert data['model_used'] is True
+
+
+def test_chat_retries_without_irrelevant_textbook_evidence(monkeypatch, tmp_path):
+    monkeypatch.setenv('TA_DATA_DIR', str(tmp_path))
+    db.init_db()
+    db.add_source(textbook_meta(), [(18, '', '动量守恒定律是自然界中的一条重要规律。')])
+    calls = []
+    async def fake_answer(question, evidence, mode, history):
+        calls.append(mode)
+        return ('这些片段没有给出定律的具体内容。' if mode == 'grounded'
+                else '系统不受外力时总动量保持不变。')
+    monkeypatch.setattr('app.main.answer', fake_answer)
+    with TestClient(app) as client:
+        data = client.post('/api/chat', json={'query': '动量守恒定律是什么？'}).json()
+    assert calls == ['grounded', 'general']
+    assert data['answer'] == '系统不受外力时总动量保持不变。'
+    assert data['citations'] == []
+    assert data['evidence_status'] == 'not_found'
 
 
 def test_only_textbooks_enter_index_and_suggestions(monkeypatch, tmp_path):
@@ -129,3 +148,50 @@ def test_false_exercise_statement_is_not_answer_evidence(monkeypatch, tmp_path):
     ])
     strong = [item for item in db.search('三角形内角和是多少？') if item['relevance'] == 'strong']
     assert [item['page'] for item in strong] == [18]
+
+
+def test_design_principles_retrieves_enumeration_not_evaluation(monkeypatch, tmp_path):
+    monkeypatch.setenv('TA_DATA_DIR', str(tmp_path))
+    db.init_db()
+    source_id = db.add_source(textbook_meta('通用技术', '高中-通用技术') | {'stage': '高中'}, [
+        (39, '', '设计的一般原则。在长期实践中，人们逐渐总结出实用、创新、经济、道德、美观、技术规范、可持续发展等设计的一般原则。'),
+        (173, '', '设计的评价是指依据设计的一般原则和要求，对设计结果进行事实判断和价值认定的活动。'),
+    ])
+    db.reindex_source(source_id, [
+        (39, '§ 第二章 / 设计的一般原则', '设计的一般原则。在长期实践中，人们逐渐总结出实用、创新、经济、道德、美观、技术规范、可持续发展等设计的一般原则。'),
+        (173, '§ 第七章 / 设计评价', '设计的评价是指依据设计的一般原则和要求，对设计结果进行事实判断和价值认定的活动。'),
+    ])
+    for question in ('什么是设计的一般原则？', '设计的一般原则有哪些？', '设计的一般原则包括什么？'):
+        result = db.search(question, subject='通用技术')[0]
+        assert result['page'] == 39
+        assert '可持续发展' in db.get_chunks([result['id']])[0]['text']
+
+
+def test_answer_evidence_restores_all_passages_on_hit_page(monkeypatch, tmp_path):
+    monkeypatch.setenv('TA_DATA_DIR', str(tmp_path))
+    db.init_db()
+    source_id = db.add_source(textbook_meta('信息技术', '高中-信息技术') | {'stage': '高中'}, [
+        (49, '', '算法的特征：①有穷性。②可行性。③确定性。④可以没有输入。'),
+        (49, '', '⑤算法必须有输出。'),
+    ])
+    with db.connect() as connection:
+        first_id = connection.execute('SELECT id FROM chunks WHERE source_id=? ORDER BY id LIMIT 1',
+                                      (source_id,)).fetchone()['id']
+    evidence = db.get_page_evidence([first_id])[0]
+    assert '①有穷性' in evidence['text']
+    assert '⑤算法必须有输出' in evidence['text']
+    assert evidence['page'] == 49
+
+
+def test_markdown_preserves_pdf_page_and_section(tmp_path):
+    pdf_path = tmp_path / 'textbook.pdf'
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_text((40, 40), 'Chapter one', fontname='helv')
+    document.save(pdf_path)
+    document.close()
+    source = textbook_meta() | {'id': 42, 'file_path': str(pdf_path)}
+    path, chunks, _ = convert_book(source, tmp_path / 'markdown', with_images=False)
+    assert '## PDF 第 1 页' in path.read_text(encoding='utf-8')
+    assert chunks[0][0] == 1
+    assert update_section('第二章 技术世界中的设计\n二、设计的一般原则', '', '')[1] == '设计的一般原则'

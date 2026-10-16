@@ -21,14 +21,17 @@ async def answer(question: str, evidence: list[dict], mode: str, history: list[d
     if mode == "grounded":
         context = "\n\n".join(
             f"[{i + 1}] {item['title']}｜{item['stage']} {item['subject']}｜{item['edition']} {item['volume']}｜"
-            f"{'PDF第' + str(item['page']) + '页' if item['page'] else '教材正文'}\n{item['text'][:1400]}"
+            f"{'PDF第' + str(item['page']) + '页' if item['page'] else '教材正文'}｜"
+            f"章节：{item.get('section', '').removeprefix('§ ').strip()}\n{item['text'][:3600]}"
             for i, item in enumerate(evidence)
         )
         system = (
             "你是面向初高中教学的证据优先助手。先读检索片段，再把相关事实整理成通顺、直接的回答；"
             "只能根据下面的检索片段回答事实性内容。若目录和正文页同时出现，综合两者回答位置问题；"
             "每个关键结论用[1]、[2]等标记来源。教材页码只可引用明确标有PDF页码且来源类型为textbook的片段。"
-            "检索片段均为教材正文。只引用与问题直接相关的片段；不能伪造课本章节、页码、引文。"
+            "检索片段均为教材正文。优先使用直接回答问题的段落；目录、练习题、评价或其他章节中只提到关键词的内容不能代替答案。"
+            "若问题要求列举，先完整列出教材明确给出的条目，再用简短的话解释；不要用相邻概念的定义来回答。"
+            "只引用与问题直接相关的片段；不能伪造课本章节、页码、引文。"
             "用自然、直接的中文回答，不要解释检索流程。数学表达式使用标准 LaTeX 语法。"
             f"\n\n检索片段：\n{context}"
         )

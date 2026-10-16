@@ -154,15 +154,27 @@ async def chat(request: ChatRequest):
                 interpreted_query = candidate
             else:
                 matches = []
-    evidence = db.get_chunks([item["id"] for item in matches]) if matches else []
+    evidence = db.get_page_evidence([item["id"] for item in matches]) if matches else []
     response_mode = "grounded" if evidence and request.mode == "grounded" else "general"
     try:
         content = await answer(request.query, evidence, response_mode, request.history)
+        if response_mode == "grounded":
+            cited = {int(number) for number in re.findall(r"\[(\d+)\]", content)}
+            insufficient = re.search(
+                r"(?:不能|无法|不足以).{0,24}(?:列出|回答|确定|确认|说明)|"
+                r"(?:片段|资料|教材).{0,24}(?:没有|未|不足以|无法).{0,28}(?:给出|列出|回答|说明|涉及|明确)|"
+                r"(?:没有|未).{0,24}(?:对.+?作出|给出|列出).{0,20}(?:说明|列举|特征|定义|内容)",
+                content,
+            )
+            if not cited or insufficient:
+                content = await answer(request.query, [], "general", request.history)
+                response_mode = "general"
+                evidence = []
     except ModelError as exc:
         raise HTTPException(503, str(exc)) from exc
     citations = [{"number": i + 1, "chunk_id": item["id"], "source_id": item["source_id"],
                   "title": item["title"], "kind": item["kind"], "page": item["page"],
-                  "stage": item["stage"], "subject": item["subject"],
+                  "stage": item["stage"], "subject": item["subject"], "section": item["section"],
                   "url": item["url"], "edition": item["edition"], "volume": item["volume"]}
                  for i, item in enumerate(evidence)]
     cited_numbers = {int(number) for number in re.findall(r"\[(\d+)\]", content)}
@@ -204,6 +216,26 @@ def source_cover(source_id: int):
             pixmap = document[0].get_pixmap(matrix=pymupdf.Matrix(.42, .42), alpha=False)
             cover.write_bytes(pixmap.tobytes("png"))
     return FileResponse(cover, media_type="image/png")
+
+
+@app.get("/api/sources/{source_id}/markdown")
+def source_markdown(source_id: int):
+    if not db.get_source(source_id):
+        raise HTTPException(404, "教材不存在")
+    path = db.data_dir() / "markdown" / f"{source_id}.md"
+    if not path.is_file():
+        raise HTTPException(404, "Markdown 版本尚未生成")
+    return FileResponse(path, media_type="text/markdown; charset=utf-8")
+
+
+@app.get("/api/sources/{source_id}/markdown-images/{filename}")
+def source_markdown_image(source_id: int, filename: str):
+    if not db.get_source(source_id) or not re.fullmatch(r"p\d{4}-[a-f0-9]{12}\.(?:png|jpg|jpeg|webp)", filename):
+        raise HTTPException(404, "教材插图不存在")
+    path = db.data_dir() / "markdown" / "images" / str(source_id) / filename
+    if not path.is_file():
+        raise HTTPException(404, "教材插图不存在")
+    return FileResponse(path)
 
 
 app.mount("/", StaticFiles(directory=STATIC, html=True), name="web")

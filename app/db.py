@@ -106,6 +106,24 @@ def add_source(meta: dict, page_chunks: list[tuple[int | None, str, str]]) -> in
         return source_id
 
 
+def reindex_source(source_id: int, page_chunks: list[tuple[int | None, str, str]]) -> None:
+    """Atomically replace retrieval passages after generating a Markdown edition."""
+    with connect() as connection:
+        if not connection.execute("SELECT 1 FROM sources WHERE id=?", (source_id,)).fetchone():
+            raise ValueError(f"Unknown textbook: {source_id}")
+        ids = [row["id"] for row in connection.execute("SELECT id FROM chunks WHERE source_id=?", (source_id,))]
+        connection.executemany("DELETE FROM chunks_fts WHERE rowid=?", ((item,) for item in ids))
+        connection.executemany("DELETE FROM chunks_search WHERE rowid=?", ((item,) for item in ids))
+        connection.execute("DELETE FROM chunks WHERE source_id=?", (source_id,))
+        for page, section, body in page_chunks:
+            cursor = connection.execute("INSERT INTO chunks (source_id,page,section,text) VALUES (?,?,?,?)",
+                                        (source_id, page, section, body))
+            connection.execute("INSERT INTO chunks_fts (rowid,text) VALUES (?,?)", (cursor.lastrowid, body))
+            connection.execute("INSERT INTO chunks_search (rowid,text) VALUES (?,?)",
+                               (cursor.lastrowid, normalize_search(body)))
+        index_source_terms(connection, source_id, page_chunks)
+
+
 def source_terms(page_chunks: list[tuple[int | None, str, str]]) -> Counter:
     """Create a small, source-backed vocabulary for completion and typo proposals."""
     terms: Counter = Counter()
@@ -218,25 +236,50 @@ def suggest(query: str, stage: str = "", subject: str = "", limit: int = 6) -> d
 def _query_plan(query: str) -> dict:
     value = unicodedata.normalize("NFKC", query).strip().lower()
     value = re.sub(r"[?？!！。\s]+$", "", value)
+    quoted_title = bool(re.search(r"《[^》]+》", value))
+    asks_definition = bool(re.search(r"^(?:请问)?(?:什么是|什么叫)|(?:是什么|是什么意思)$", value))
+    asks_list = bool(re.search(r"(?:有哪些|哪几项|哪几条|包括什么|包括哪些|分别是什么|列出|什么是.*原则)", value))
     value = re.sub(r"^(请问|请解释|请说明|什么是|什么叫)", "", value)
-    value = re.sub(r"(是什么意思|是什么|有哪些|是多少|是谁|怎么理解|如何理解)$", "", value)
+    value = re.sub(r"(是什么意思|是什么|有哪些|是多少|是谁|怎么理解|如何理解|包括什么|包括哪些|有哪几项|有哪几条|分别是什么)$", "", value)
+    value = re.sub(r"(?:是)?怎么形成的$", "的形成", value)
+    value = re.sub(r"(?:会)?产生什么现象$", "的现象", value)
+    value = re.sub(r"有什么区别$", "的区别", value)
+    value = re.sub(r"保护什么$", "的保护", value)
     description = re.fullmatch(r"(.+?)(描写了什么|写了什么|讲了什么|表达了什么)", value)
     development = re.fullmatch(r"(.+?)(?:如何|怎么)(发展|演变|形成)", value)
-    facet_words = "第二定义|第一定义|定义|基本过程|过程|主要特点|特点|性质|意义|原因|作用|用法|影响因素|一般原则|基本特征|作者"
+    ask_facet = re.fullmatch(r"(.+?)(?:有什么|有哪些|有何|起什么|具有什么)(作用|影响|意义|特点|地理意义|主要特征|基本特征|关系|通性)", value)
+    ask_how = re.fullmatch(r"(.+?)(?:如何|怎么|怎样)(用|使用|应用|形成|发展|计算|构成|变化|保护|实现|进行|传播|制造)", value)
+    ask_measures = re.fullmatch(r"(.+?)(?:采取了哪些|有哪些|有哪几项)(措施|环节|形式|阶段|特点)", value)
+    named_principles = re.fullmatch(r"(.+?)的(?:一般原则|基本原则|主要原则)", value)
+    facet_words = "第二定义|第一定义|定义|基本过程|过程|主要特点|特点|性质|意义|原因|作用|用法|影响因素|基本特征|作者|内容|地理意义|工作原理|顶点式|地位|目的|主要原因|特征|保护|区别|现象|形成|关系"
     match = re.fullmatch(rf"(.+?)的({facet_words})", value)
     if description:
         core, facet = description.group(1).strip("《》"), "描写"
+    elif named_principles:
+        core, facet = value, ""
+    elif ask_facet:
+        core, facet = ask_facet.group(1), ask_facet.group(2)
+    elif ask_how:
+        core, facet = ask_how.group(1), ask_how.group(2)
+    elif ask_measures:
+        core, facet = ask_measures.group(1), ask_measures.group(2)
     elif development:
         core, facet = development.group(1), development.group(2)
     elif match:
         core, facet = match.group(1), match.group(2)
-    elif "的" in value and len(value.split("的", 1)[0]) >= 2 and len(value.split("的", 1)[1]) >= 2:
-        core, facet = value.split("的", 1)
     else:
         core, facet = value, ""
-    if facet == "原因" and core.endswith("爆发"):
+    if facet == "原因" and core.endswith(("爆发", "形成")):
         core = core[:-2]
+    if facet in ("发展", "演变", "形成") and core.startswith(("中国古代", "我国古代")):
+        core = re.sub(r"^(?:中国古代|我国古代)", "", core)
+    if core == "孟德尔分离定律":
+        core = "分离定律"
+    if core.startswith("我国的") and len(core) > 5:
+        core = core[3:]
     core = normalize_search(core.strip("《》"))
+    if core in ("酸", "碱") and facet == "通性":
+        core = core + "有相似的化学性质"
     phrase = normalize_search(value)
     tokens = list(dict.fromkeys(normalize_search(token) for token in jieba.lcut(core)
                                 if len(normalize_search(token)) >= 2 and token not in STOPWORDS))
@@ -246,8 +289,8 @@ def _query_plan(query: str) -> dict:
     if core and core not in tokens:
         tokens.insert(0, core)
     return {"core": core, "facet": normalize_search(facet), "phrase": phrase,
-            "tokens": tokens[:6], "definition": bool("定义" in facet or "什么是" in query or ("是什么" in query and not facet)),
-            "strict_ordinal": facet == "第二定义", "numeric": "是多少" in query}
+            "tokens": tokens[:6], "definition": bool("定义" in facet or asks_definition and not facet),
+            "list": asks_list, "quoted_title": quoted_title, "strict_ordinal": facet == "第二定义", "numeric": "是多少" in query}
 
 
 def _compact_with_offsets(value: str) -> tuple[str, str, list[int]]:
@@ -259,7 +302,7 @@ def _compact_with_offsets(value: str) -> tuple[str, str, list[int]]:
 def search(query: str, stage: str = "", subject: str = "", limit: int = 8, group: bool = True) -> list[dict]:
     plan = _query_plan(query)
     core = plan["core"]
-    if len(core) < 2:
+    if len(core) < 2 and not plan["quoted_title"]:
         return []
     with connect() as connection:
         def find_ids(term: str) -> list[int]:
@@ -305,7 +348,8 @@ def search(query: str, stage: str = "", subject: str = "", limit: int = 8, group
         for position in positions[:35]:
             window = body[max(0, position - 155):position + max(230, len(anchor) + 100)]
             near = body[max(0, position - 75):position + len(anchor) + 65]
-            direct = bool(re.search(r"(?:叫做|称为|这就是|是指|定义为).{0,24}" + re.escape(core), near)
+            direct = bool(re.search(re.escape(core) + r"(?:是指|指的是|定义为|是|包括)", near)
+                          or re.search(r"(?:叫做|叫作|称为|又称|这就是).{0,24}" + re.escape(core), near)
                           or ("我们就说" in near and core in near)
                           or (core in near and "点的轨迹" in near and ("叫做" in near or "称为" in near)))
             score = 10.0 if anchor == core or len(anchor) >= 3 else 4.0
@@ -316,10 +360,28 @@ def search(query: str, stage: str = "", subject: str = "", limit: int = 8, group
             facet_alias = facet[:-1] if facet.endswith("式") and len(facet) >= 3 else facet[2:] if facet.startswith("基本") else facet[2:] if facet.startswith("主要") else ""
             facet_weighted = facet not in ("", "定义", "第一定义", "第二定义")
             score += 15 if facet_weighted and facet in near else 8 if facet_weighted and facet_alias and facet_alias in near else 0
+            linked_facet = bool(facet_weighted and re.search(
+                re.escape(core) + r"(?:的|之)?(?:基本|主要)?" + re.escape(facet_alias or facet), near))
+            if linked_facet:
+                score += 24
+            elif facet_weighted and facet in near and len(core) <= 4:
+                score -= 10
             if facet_weighted and facet not in near and (not facet_alias or facet_alias not in near):
                 score -= 4
+            if re.search(r"(?:根据|请|结合).{0,16}" + re.escape(core) + r".{0,12}(?:填充|填空|回答|讨论)", near):
+                score -= 22
             score += 2 * sum(token in window for token in present if token != anchor)
-            numeric_direct = bool(plan["numeric"] and re.search(re.escape(anchor) + r".{0,12}(?:等于|为|是)\s*\d", near))
+            if plan["list"] and core in window:
+                score += 10 if re.search(r"(?:总结出|包括|主要有|分为|有以下|分别是).{0,110}" + re.escape(core), near) else 0
+                score += min(14, 3 * near.count("、"))
+                score += 5 * min(window.count("层面"), 3)
+                if re.search(re.escape(core) + r".{0,24}(?:具有|有)(?:下列|以下|这些).{0,12}(?:特征|特点|原则|性质)", window):
+                    score += 12
+                list_items = len(re.findall(r"[①②③④⑤⑥⑦⑧]|\([1-9]\)|(?:^|\n)[1-9][.、．]", display))
+                if list_items >= 3 and (linked_facet or core in window and "相似的化学性质" in window):
+                    score += 16
+            numeric_direct = bool(plan["numeric"] and (re.search(re.escape(anchor) + r".{0,12}(?:等于|为|是)\s*\d", near)
+                           or core in near and re.search(r"\d", near) and (direct or "约" in near or "等于" in near)))
             exercise_context = bool(plan["numeric"] and re.search(r"(?:哪些是|下列.*?中|判断.*?对错|随机事件)", body[max(0, position - 150):position]))
             if numeric_direct:
                 score += 18
@@ -330,12 +392,20 @@ def search(query: str, stage: str = "", subject: str = "", limit: int = 8, group
                 score += 2 if any(cue in near for cue in ("一般地", "定律", "定义")) else 0
                 if core == "函数" and "我们就说" in near and "唯一确定" in window:
                     score += 15
+                if core == "函数" and "唯一确定" in window and "对应关系" in window:
+                    score += 28
+                    direct = True
+                if re.search(r"(?:这就是|称为|又称|叫做|叫作).{0,20}" + re.escape(core), near):
+                    score += 25
+                    direct = True
                 if core == "函数" and any(modifier + core in near for modifier in ("三角", "反比例", "正比例", "一次", "二次")):
                     score -= 6
             if core == "二次函数" and facet == "顶点式" and re.search(r"[y狔]\s*=\s*[a犪].{0,3}\([x狓].{0,8}\)\s*2.{0,4}[k犽]", window):
                 score += 18
             if plan["facet"] == "作者" and position < 100 and "选自" in body[:600]:
                 score += 12
+            if plan["quoted_title"] and position < 130 and re.search(r"(?:^|\n|\d)\s*" + re.escape(core) + r"\s*(?:\n|[a-z])", display[:230], re.I):
+                score += 25
             if position < 110:
                 score += 2
             if score > best_score:
@@ -362,8 +432,14 @@ def search(query: str, stage: str = "", subject: str = "", limit: int = 8, group
                 best_score -= 18
         if not exact_core:
             best_score -= 2
+        if core == "摩尔" and "摩尔根" in body and not any(term in body.lower() for term in ("mol", "物质的量", "摩尔质量")):
+            best_score -= 20
         if max_subject_count:
             best_score += 8 * sqrt(subject_counts[item["subject"]] / max_subject_count)
+        # Chapter names often repeat in page headers. A section match is only
+        # supporting context; the answer still has to come from the page body.
+        if item["section"].startswith("§") and core in normalize_search(item["section"]):
+            best_score += 5
         if best_score < 7:
             continue
         begin = max(0, best_position - 75)
@@ -371,9 +447,18 @@ def search(query: str, stage: str = "", subject: str = "", limit: int = 8, group
         snippet = " ".join(display[offsets[begin]:offsets[end - 1] + 1].split()) if offsets else ""
         item["snippet"] = ("…" if begin else "") + snippet + ("…" if end < len(body) else "")
         item["score"] = round(best_score, 2)
-        coherent = core in body or (best_numeric and all(token in best_near for token in ("三角形", "内角和")))
+        # For normal queries, independent words in one paragraph are not proof
+        # that the named concept occurs (e.g. quantum + computer + manufacture).
+        named_parts = re.match(r"^(孟德尔|秦朝|隋朝|唐朝|宋朝|明朝|清朝)(.{2,})$", core)
+        named_pair = bool(named_parts and all(part in best_window for part in named_parts.groups())
+                          and abs(best_window.find(named_parts.group(1)) - best_window.find(named_parts.group(2))) <= 110)
+        coherent = core in body or named_pair or (best_numeric and all(token in best_near for token in ("三角形", "内角和")))
+        if plan["facet"] in ("制造", "计算", "保护", "构成", "形成") and core in body:
+            # A nearby preceding verb may belong to another subject entirely.
+            coherent = coherent and any(plan["facet"] in body[pos + len(core):pos + len(core) + 120]
+                                        for pos in positions[:35])
         supported_definition = not plan["definition"] or best_direct or len(core) >= 3 or bool(plan["facet"] == "第二定义" and second_alias)
-        item["relevance"] = "strong" if best_score >= 14 and coherent and supported_definition and (not plan["numeric"] or best_numeric and not best_exercise) and (not plan["strict_ordinal"] or ordinal_matched) else "weak"
+        item["relevance"] = "strong" if best_score >= (18 if core not in body else 14) and coherent and supported_definition and (not plan["numeric"] or best_numeric and not best_exercise) and (not plan["strict_ordinal"] or ordinal_matched) else "weak"
         item.pop("text")
         results.append(item)
     results.sort(key=lambda item: (-item["score"], item["source_id"], item["page"] or 0))
@@ -396,6 +481,31 @@ def get_chunks(ids: list[int]) -> list[dict]:
         rows = db.execute(f"SELECT c.*,s.title,s.kind,s.stage,s.subject,s.edition,s.volume,s.url FROM chunks c JOIN sources s ON s.id=c.source_id WHERE c.id IN ({','.join('?' for _ in ids)})", ids).fetchall()
         by_id = {r["id"]: dict(r) for r in rows}
         return [by_id[i] for i in ids if i in by_id]
+
+
+def get_page_evidence(ids: list[int]) -> list[dict]:
+    """Return complete hit pages so an answer cannot lose a list at a chunk edge."""
+    evidence = get_chunks(ids)
+    if not evidence:
+        return []
+    with connect() as connection:
+        for item in evidence:
+            if item["page"] is None:
+                continue
+            pieces = [row["text"] for row in connection.execute(
+                "SELECT text FROM chunks WHERE source_id=? AND page=? ORDER BY id",
+                (item["source_id"], item["page"]),
+            )]
+            body = ""
+            for piece in pieces:
+                if not body:
+                    body = piece
+                    continue
+                overlap = next((size for size in range(min(100, len(body), len(piece)), 0, -1)
+                                if body.endswith(piece[:size])), 0)
+                body += piece[overlap:] if overlap else "\n\n" + piece
+            item["text"] = body
+    return evidence
 
 
 def matching_pages(source_id: int, query: str) -> list[int]:

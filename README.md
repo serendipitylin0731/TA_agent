@@ -16,11 +16,13 @@ python scripts/sync_keben.py --dry-run  # 查看计划接入的教材
 python scripts/sync_keben.py            # 下载并索引教材
 python scripts/sync_keben.py --book-id 0205  # 接入指定教材
 python scripts/sync_general_tech.py     # 补充浙江使用的通用技术教材
-python scripts/build_suggestions.py    # 为旧数据补建联想词索引
+PYTHONPATH=. python scripts/build_markdown.py  # 将已下载 PDF 批量转为分页 Markdown 并重建检索索引
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-访问 `http://127.0.0.1:8000/`。检索与阅读无需模型密钥；Chat 需要服务端密钥。默认模型在 `.env` 中配置，密钥不发送到浏览器。最近 10 条对话和检索记录仅保存在当前浏览器的 `localStorage` 中。点击检索结果或引用会从命中页打开；从教材目录进入则从第一页打开。
+访问 `http://127.0.0.1:8000/`。检索与阅读无需模型密钥；Chat 需要服务端密钥。默认模型在 `.env` 中配置，密钥不发送到浏览器。左侧分别保存最近 10 个聊天会话和 10 次原文检索，记录仅在当前浏览器的 `localStorage` 中。点击 Chat 或查询原文导航会新建空白页面，点击侧栏记录可恢复内容。点击检索结果或引用会从命中页打开；从教材目录进入则从第一页打开。
+
+已下载 PDF 经 PyMuPDF 提取文字，生成 `storage/markdown/{教材编号}.md`，每页保留原 PDF 页序、章节、可提取的正文以及部分关键插图的相对链接。检索数据库用这些 Markdown 转换出的分页文本重新建立索引，并保存原始 PDF 页码供定位。转换脚本可中断续跑；单本强制重建用 `--book-id 编号 --force`。Markdown 和图片属于本地生成数据，不进入 Git。PDF 中若某一页只有扫描图片而无文本层，其图中文字目前仍需 OCR；图片本身未进入语义索引。
 
 ## 教材与权限
 
@@ -37,8 +39,10 @@ python -m pytest -q
 node --check web/app.js
 node --check web/reader.js
 PYTHONPATH=. python scripts/evaluate_retrieval.py
+PYTHONPATH=. python scripts/evaluate_questions.py
+PYTHONPATH=. python scripts/evaluate_answers.py  # 需要配置模型 API，抽查真实回答
 ```
 
-检索评估覆盖 39 个跨学科问题、目标页、无教材证据和错别字建议。`web/vendor/pdfjs/` 为本地 PDF.js 分发文件，许可证见其 `LICENSE`。
+检索评估覆盖 39 个基础问题和 138 个扩展问题，还检查指定页、无教材证据和错别字建议。真实回答脚本覆盖 14 个跨学科及未命中案例。`web/vendor/pdfjs/` 为本地 PDF.js 分发文件，许可证见其 `LICENSE`。
 
-更多信息见[系统架构](docs/architecture.md)、[演示脚本](docs/demo.md)和[教材覆盖快照](docs/coverage.md)。
+更多信息见[系统架构](docs/architecture.md)、[演示脚本](docs/demo.md)、[验证记录](docs/evaluation.md)和[教材覆盖快照](docs/coverage.md)。
